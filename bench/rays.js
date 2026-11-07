@@ -1,19 +1,20 @@
 // Measures how the ray count trades accuracy against speed in worker.js's view().
-// Prints one Markdown table; progress and total runtime go to stderr.
-// Measured 2026-11-07 at Feldberg/100 km/4096 rays through test/harness.js: 293-302 ms over three
-// runs. The earlier 3410 ms figure came from running worker.js in node:vm, whose context
-// indirection made every global lookup (Math.*) ~10x slower. Ratios between rows hold.
+// Prints one Markdown table; progress and total runtime go to stderr. Terrain comes from AWS
+// Terrarium tiles (https://s3.amazonaws.com/elevation-tiles-prod/terrarium, z/x/y PNGs, 256x256,
+// height = R*256 + G + B/256 - 32768) through the cache described in terrain.js; `--quick` runs
+// only Großer Feldberg at 100 km.
+// Measured 2026-11-07 at Feldberg/100 km/4096 rays through test/harness.js: median of 3 runs
+// 250 ms on Terrarium tiles (reruns gave 201-265 ms; the old SRTM PNGs gave 293-302 ms). The
+// earlier 3410 ms figure came from running worker.js in node:vm, whose context indirection made
+// every global lookup (Math.*) ~10x slower; ratios between rows still hold.
 "use strict";
 
-const path = require("node:path");
 const { performance } = require("node:perf_hooks");
 
 const { loadWorker } = require("../test/harness.js");
-const { decodeDemPng } = require("./png.js");
+const { loadRealTerrain } = require("./terrain.js");
 
-const ROOT = path.join(__dirname, "..");
 const R = 6371008.8;
-const REGION = { la0: 48, lo0: 6, nla: 4, nlo: 5 };
 const REFRACTION_K = 0.13; // index.html default
 const MASK_WORLD_WIDTH = 1024; // worker's unit-Mercator world width
 const RAD = Math.PI / 180;
@@ -28,17 +29,6 @@ const RAY_COUNTS = [4096, 8192, 16384, 32768];
 const REFERENCE_RAYS = 65536;
 const FAR_DISTANCE_METRES = 50000;
 const REFERENCE_RUN_LIMIT_MS = 120000; // brief: one reference run if a run exceeds 120 s
-
-function loadTerrain(worker) {
-  for (let la = REGION.la0; la < REGION.la0 + REGION.nla; la++) {
-    for (let lo = REGION.lo0; lo < REGION.lo0 + REGION.nlo; lo++) {
-      const idx = (la - REGION.la0) * REGION.nlo + (lo - REGION.lo0);
-      const file = path.join(ROOT, "dem", "N" + la + "E" + String(lo).padStart(3, "0") + ".png");
-      worker.send({ type: "tile", idx, data: decodeDemPng(file) });
-    }
-  }
-  worker.messages.length = 0;
-}
 
 function timeViewOnce(worker, request) {
   worker.messages.length = 0;
@@ -161,17 +151,22 @@ function printRow(row) {
   );
 }
 
-function main() {
+async function main() {
   const startedAt = performance.now();
+  const quick = process.argv.includes("--quick");
+  const sites = quick ? [SITES[0]] : SITES;
+  const rmaxValues = quick ? [RMAX_VALUES[0]] : RMAX_VALUES;
   const worker = loadWorker();
-  worker.send({ type: "init", la0: REGION.la0, lo0: REGION.lo0, nla: REGION.nla, nlo: REGION.nlo, R });
-  loadTerrain(worker);
+  worker.send({ type: "init", R });
 
   const referenceRunCounts = [];
   let viewId = 0;
   printHeader();
-  for (const site of SITES) {
-    for (const rmax of RMAX_VALUES) {
+  for (const site of sites) {
+    for (const rmax of rmaxValues) {
+      console.error("loading " + site.name + " rmax " + rmax / 1000 + " km");
+      const terrain = await loadRealTerrain(worker, { lat: site.lat, lon: site.lon, rmax });
+      console.error("loaded " + terrain.keys.length + " tiles at z" + terrain.z);
       console.error("measuring " + site.name + " rmax " + rmax / 1000 + " km");
       const referenceRequest = {
         type: "view", id: ++viewId, lat: site.lat, lon: site.lon, h: site.h,
@@ -202,4 +197,7 @@ function main() {
   console.error("total runtime: " + ((performance.now() - startedAt) / 1000).toFixed(1) + " s");
 }
 
-main();
+main().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exitCode = 1;
+});

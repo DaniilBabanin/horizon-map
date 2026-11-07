@@ -1,13 +1,15 @@
-// Minimal PNG decoder for the SRTM DEM tiles: 1201x1201, RGB 8-bit, non-interlaced.
-// Height is packed losslessly as (metres + 1000) in the red/green bytes.
+// Minimal PNG decoder for 8-bit RGB images, used by the benchmark to read AWS Terrarium
+// elevation tiles (256x256, colour type 2, non-interlaced) and turn them into metres.
 "use strict";
 
 const fs = require("node:fs");
 const zlib = require("node:zlib");
 
-const DEM_SIDE = 1201;
 const BYTES_PER_PIXEL = 3;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const TERRARIUM_OFFSET = 32768;
+const INT16_MIN = -32768;
+const INT16_MAX = 32767;
 
 function paethPredictor(a, b, c) {
   const p = a + b - c;
@@ -38,15 +40,12 @@ function readChunks(file) {
   return { header, idat };
 }
 
-function decodeDemPng(filePath) {
+function decodePngRgb(filePath) {
   const { header, idat } = readChunks(fs.readFileSync(filePath));
   if (!header || header.length !== 13) throw new Error("missing or malformed IHDR");
   const width = header.readUInt32BE(0), height = header.readUInt32BE(4);
   const bitDepth = header[8], colorType = header[9];
   const compression = header[10], filterMethod = header[11], interlace = header[12];
-  if (width !== DEM_SIDE || height !== DEM_SIDE) {
-    throw new Error("expected " + DEM_SIDE + "x" + DEM_SIDE + ", got " + width + "x" + height);
-  }
   if (colorType !== 2) throw new Error("unsupported colour type " + colorType + " (expected 2, RGB)");
   if (bitDepth !== 8) throw new Error("unsupported bit depth " + bitDepth + " (expected 8)");
   if (interlace !== 0) throw new Error("unsupported interlace " + interlace + " (expected 0)");
@@ -61,14 +60,15 @@ function decodeDemPng(filePath) {
     throw new Error("inflated size " + inflated.length + ", expected " + (stride + 1) * height);
   }
 
-  const heights = new Int16Array(width * height);
-  let prior = new Uint8Array(stride);
-  let current = new Uint8Array(stride);
+  const rgb = new Uint8Array(stride * height);
+  const emptyRow = new Uint8Array(stride);
   let position = 0;
   for (let row = 0; row < height; row++) {
     const filterType = inflated[position++];
     const raw = inflated.subarray(position, position + stride);
     position += stride;
+    const current = rgb.subarray(row * stride, (row + 1) * stride);
+    const prior = row > 0 ? rgb.subarray((row - 1) * stride, row * stride) : emptyRow;
     switch (filterType) {
       case 0:
         current.set(raw);
@@ -97,15 +97,23 @@ function decodeDemPng(filePath) {
       default:
         throw new Error("unknown PNG filter " + filterType + " on scanline " + row);
     }
-    for (let column = 0; column < width; column++) {
-      const base = column * BYTES_PER_PIXEL;
-      heights[row * width + column] = ((current[base] << 8) | current[base + 1]) - 1000;
-    }
-    const previousRow = prior;
-    prior = current;
-    current = previousRow;
+  }
+  return { width, height, rgb };
+}
+
+// Terrarium packs metres as R*256 + G + B/256 - 32768; the worker's tiles are whole
+// metres, so round. Int16 cannot hold the full range; clamp to its ends.
+function terrariumToInt16(rgb) {
+  if (rgb.length % BYTES_PER_PIXEL !== 0) {
+    throw new Error("RGB byte count " + rgb.length + " is not a multiple of " + BYTES_PER_PIXEL);
+  }
+  const heights = new Int16Array(rgb.length / BYTES_PER_PIXEL);
+  for (let pixel = 0; pixel < heights.length; pixel++) {
+    const base = pixel * BYTES_PER_PIXEL;
+    const metres = Math.round(rgb[base] * 256 + rgb[base + 1] + rgb[base + 2] / 256 - TERRARIUM_OFFSET);
+    heights[pixel] = Math.min(INT16_MAX, Math.max(INT16_MIN, metres));
   }
   return heights;
 }
 
-module.exports = { decodeDemPng };
+module.exports = { decodePngRgb, terrariumToInt16 };
