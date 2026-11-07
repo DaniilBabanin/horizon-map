@@ -1,0 +1,875 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Horizon Finder</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: instrument panel left (stacks under the chart on phones); right column is the shaded-relief map above a 360° skyline panorama. Aeronautical-chart magenta marks what you can see. */
+:root {
+  --sea: #cdd9df;
+  --land: #e9ece4;
+  --water: #bccdd6;
+  --border: #9aa7a3;
+  --ink: #1d2a30;
+  --muted: #5a6a70;
+  --panel: #f7f8f5;
+  --rule: #d6dcd8;
+  --horizon: #b0207a;
+  --vis: rgba(176, 32, 122, 0.36);
+  --ring: #2d6a8a;
+  --halo: rgba(247, 248, 245, 0.85);
+  --field: #ffffff;
+  --sky-top: #dfe9ef;
+  --sky-low: #f3f6f2;
+  --pano-near: #3e4b45;
+  --pano-far: #a9b8bd;
+  --f-display: "Saira Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sea: #0d1920; --land: #1d272c; --water: #10202a; --border: #3f5058;
+    --ink: #e3eaec; --muted: #93a4aa; --panel: #121c22; --rule: #26343b;
+    --horizon: #ff5cb8; --vis: rgba(255, 92, 184, 0.34); --ring: #6fb6d9;
+    --halo: rgba(13, 25, 32, 0.85); --field: #0d171c;
+    --sky-top: #1c3344; --sky-low: #2b4555; --pano-near: #060b0e; --pano-far: #52656e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --sea: #0d1920; --land: #1d272c; --water: #10202a; --border: #3f5058;
+  --ink: #e3eaec; --muted: #93a4aa; --panel: #121c22; --rule: #26343b;
+  --horizon: #ff5cb8; --vis: rgba(255, 92, 184, 0.34); --ring: #6fb6d9;
+  --halo: rgba(13, 25, 32, 0.85); --field: #0d171c;
+  --sky-top: #1c3344; --sky-low: #2b4555; --pano-near: #060b0e; --pano-far: #52656e;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body { background: var(--panel); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.45; }
+.app { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+aside {
+  border-right: 1px solid var(--rule); overflow-y: auto; min-width: 0;
+  padding-block: 20px 28px;
+  padding-left: max(18px, env(safe-area-inset-left, 0px)); padding-right: 18px;
+  display: flex; flex-direction: column; gap: 18px;
+}
+h1 { font-family: var(--f-display); font-weight: 700; font-size: 26px; letter-spacing: 0.01em; margin: 0; line-height: 1.1; text-wrap: balance; }
+.lede { color: var(--muted); margin: 6px 0 0; max-width: 60ch; }
+.label { font-family: var(--f-display); font-weight: 600; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.group { display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+input[type="text"], input[type="number"] {
+  font: 500 15px var(--f-mono); color: var(--ink); background: var(--field);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; min-width: 0;
+}
+input[type="text"] { font-family: var(--f-body); width: 100%; }
+input[type="number"] { width: 120px; }
+input:focus-visible, button:focus-visible, select:focus-visible { outline: 2px solid var(--horizon); outline-offset: 1px; }
+input[type="range"] { width: 100%; accent-color: var(--horizon); }
+.unit { font-family: var(--f-mono); color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font: 500 12px var(--f-body); color: var(--ink); background: transparent;
+  border: 1px solid var(--rule); border-radius: 999px; padding: 4px 10px; cursor: pointer;
+}
+.chip:hover { border-color: var(--horizon); }
+.chip[aria-pressed="true"] { background: var(--horizon); border-color: var(--horizon); color: var(--panel); }
+.search { position: relative; }
+.results { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); background: var(--field); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+.results button { display: flex; justify-content: space-between; width: 100%; text-align: left; border: 0; background: transparent; color: var(--ink); font: 14px var(--f-body); padding: 8px 10px; cursor: pointer; gap: 8px; }
+.results button:hover, .results button.active { background: var(--vis); }
+.results small { color: var(--muted); font-family: var(--f-mono); }
+.results .out { opacity: 0.55; }
+.readout { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding-block: 14px; display: flex; flex-direction: column; gap: 12px; }
+.big { font-family: var(--f-display); font-weight: 600; font-size: 42px; line-height: 1; color: var(--horizon); font-variant-numeric: tabular-nums; }
+.big .u { font-size: 20px; margin-left: 4px; color: var(--muted); }
+.sub { font-family: var(--f-mono); color: var(--muted); font-size: 13px; }
+dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.status { font: 12.5px var(--f-mono); color: var(--muted); min-height: 1.4em; }
+.status.err { color: var(--horizon); }
+.legend { display: grid; grid-template-columns: 24px 1fr; gap: 6px 8px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.sw { width: 22px; height: 12px; border-radius: 2px; }
+.sw.vis { background: var(--vis); }
+.sw.sky { height: 0; border-top: 3px dotted var(--horizon); }
+.sw.ring { height: 0; border-top: 1.5px dashed var(--ring); }
+.sw.reg { height: 0; border-top: 1.5px dotted var(--muted); }
+.note { color: var(--muted); font-size: 12.5px; max-width: 60ch; }
+.note p { margin: 0 0 8px; }
+select { font: 14px var(--f-body); color: var(--ink); background: var(--field); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 8px; max-width: 100%; }
+.right { display: grid; grid-template-rows: 1fr 180px; min-width: 0; min-height: 0; }
+.mapwrap { position: relative; min-width: 0; min-height: 0; background: var(--sea); }
+.panowrap { position: relative; border-top: 1px solid var(--rule); background: var(--sky-low); min-width: 0; }
+canvas { display: block; width: 100%; height: 100%; }
+#map { touch-action: none; cursor: crosshair; }
+#pano { cursor: crosshair; }
+.panolabel { position: absolute; left: max(10px, env(safe-area-inset-left, 0px)); top: 6px; pointer-events: none; }
+.mapbar { position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); display: flex; gap: 6px; }
+.mapbar button { font: 600 13px var(--f-body); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+.mapbar button:hover { border-color: var(--horizon); }
+.hint { position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); top: 12px; max-width: calc(100% - 150px); background: var(--halo); border-radius: 6px; padding: 6px 10px; font-size: 12.5px; color: var(--ink); pointer-events: none; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font: 12px var(--f-mono); color: var(--ink); white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,0.12); z-index: 3; }
+.tip b { color: var(--horizon); font-weight: 500; }
+.scale { position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 12px; font: 11px var(--f-mono); color: var(--ink); background: var(--halo); padding: 2px 5px; border-radius: 4px; }
+.scale .bar { height: 6px; border: 1.5px solid var(--ink); border-top: 0; margin-top: 2px; }
+.attrib { position: absolute; right: max(10px, env(safe-area-inset-right, 0px)); bottom: 8px; font-size: 10.5px; color: var(--muted); background: var(--halo); padding: 2px 6px; border-radius: 4px; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; height: auto; }
+  .right { order: -1; grid-template-rows: 55vh 150px; }
+  aside { border-right: 0; overflow: visible; padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-left: max(16px, env(safe-area-inset-left, 0px)); }
+  .big { font-size: 36px; }
+}
+</style>
+
+<div class="app">
+  <aside>
+    <header>
+      <h1>Horizon Finder</h1>
+      <p class="lede">Click the map to stand somewhere, set your eye height, and see what the terrain actually lets you see: the visible land, the skyline that closes the view, and a 360° panorama of it.</p>
+    </header>
+
+    <div class="group">
+      <label class="label" for="q">Find a place</label>
+      <div class="search">
+        <input type="text" id="q" placeholder="Town, e.g. Bad Homburg" autocomplete="off">
+        <div class="results" id="results" hidden></div>
+      </div>
+      <div class="sub" id="coords">49.9989° N, 8.2739° E</div>
+    </div>
+
+    <div class="group">
+      <label class="label" for="h">Eye height above the ground</label>
+      <div class="row">
+        <input type="number" id="h" min="0.5" max="12000" step="any" value="24">
+        <span class="unit">m</span>
+      </div>
+      <input type="range" id="hr" min="0" max="1000" step="1" aria-label="Eye height, logarithmic">
+      <div class="chips" id="presets">
+        <button class="chip" data-h="1.7">Standing 1.7 m</button>
+        <button class="chip" data-h="24">7th floor 24 m</button>
+        <button class="chip" data-h="60">60 m</button>
+        <button class="chip" data-h="150">Tall tower 150 m</button>
+        <button class="chip" data-h="1000">Balloon 1,000 m</button>
+        <button class="chip" data-h="11000">Airliner 11 km</button>
+      </div>
+    </div>
+
+    <div class="status" id="status" aria-live="polite">Loading terrain…</div>
+
+    <section class="readout">
+      <div>
+        <div class="label">Farthest land you can see</div>
+        <div class="big"><span id="farKm">–</span><span class="u">km</span></div>
+        <div class="sub" id="farSub">&nbsp;</div>
+      </div>
+      <dl>
+        <dt>Ground at your spot</dt><dd id="ground">–</dd>
+        <dt>Your eye, above sea level</dt><dd id="eye">–</dd>
+        <dt>Visible land in range</dt><dd id="area">–</dd>
+        <dt>Skyline, median distance</dt><dd id="skyMed">–</dd>
+        <dt>Flat-ground horizon</dt><dd id="flat">–</dd>
+      </dl>
+    </section>
+
+    <div class="legend">
+      <span class="sw vis"></span><span>Ground you can see</span>
+      <span class="sw sky"></span><span>Skyline: the last ridge in each direction</span>
+      <span class="sw ring"></span><span>Where the horizon would be on flat ground</span>
+      <span class="sw reg"></span><span>Edge of the terrain data</span>
+    </div>
+
+    <div class="group">
+      <label class="label" for="rmax">Look out to</label>
+      <select id="rmax">
+        <option value="50000">50 km</option>
+        <option value="100000" selected>100 km</option>
+        <option value="150000">150 km</option>
+        <option value="200000">200 km (slow)</option>
+      </select>
+    </div>
+
+    <div class="group">
+      <label class="label" for="refr">Atmospheric refraction</label>
+      <select id="refr">
+        <option value="0.13" selected>Standard (k = 0.13)</option>
+        <option value="0">None, pure geometry</option>
+        <option value="0.25">Strong, cold air near the ground (k = 0.25)</option>
+      </select>
+    </div>
+
+    <div class="note">
+      <p>Hover the map to check any spot: whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama to find which ridge forms the skyline in that direction.</p>
+      <p>Terrain is SRTM 3″ (about 90 m) covering 48–52° N, 6–11° E: Rhine-Main, Rhineland-Palatinate, Saarland, Hesse, northern Baden-Württemberg and southern NRW. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
+    </div>
+  </aside>
+
+  <div class="right">
+    <div class="mapwrap" id="mapwrap">
+      <canvas id="map" aria-label="Map. Click to place the observer."></canvas>
+      <div class="hint" id="hint" hidden></div>
+      <div class="mapbar"><button id="fit" type="button">Fit view</button></div>
+      <div class="tip" id="tip" hidden></div>
+      <div class="scale"><span id="scaleTxt">10 km</span><div class="bar" id="scaleBar" style="width:100px"></div></div>
+      <div class="attrib">SRTM (NASA) · Natural Earth · GeoNames</div>
+    </div>
+    <div class="panowrap" id="panowrap">
+      <canvas id="pano" aria-label="360 degree skyline panorama"></canvas>
+      <div class="panolabel label">Skyline panorama · height exaggerated</div>
+      <div class="tip" id="ptip" hidden></div>
+    </div>
+  </div>
+</div>
+
+<script type="text/plain" id="worker-src">
+const LA0 = 48, LO0 = 6, NLA = 4, NLO = 5, S = 1200, SZ = 1201;
+const R = 6371008.8, RAD = Math.PI / 180;
+const tiles = new Array(NLA * NLO).fill(null);
+let last = null;
+
+function elev(lat, lon) {
+  const la = Math.floor(lat), lo = Math.floor(lon);
+  if (la < LA0 || la >= LA0 + NLA || lo < LO0 || lo >= LO0 + NLO) return NaN;
+  const t = tiles[(la - LA0) * NLO + (lo - LO0)];
+  if (!t) return NaN;
+  const y = (la + 1 - lat) * S, x = (lon - lo) * S;
+  let r = y | 0, c = x | 0; if (r >= S) r = S - 1; if (c >= S) c = S - 1;
+  const fy = y - r, fx = x - c, i = r * SZ + c;
+  const a = t[i], b = t[i + 1], cc = t[i + SZ], d = t[i + SZ + 1];
+  return (a + (b - a) * fx) * (1 - fy) + (cc + (d - cc) * fx) * fy;
+}
+
+function mercY(lat) { return Math.log(Math.tan(Math.PI / 4 + lat * RAD / 2)); }
+
+function shade(idx) {
+  const t = tiles[idx];
+  const la = LA0 + Math.floor(idx / NLO), lo = LO0 + idx % NLO;
+  const W = 480, y1 = mercY(la + 1), y0 = mercY(la);
+  const H = Math.round(W * (y1 - y0) / RAD);
+  const out = new Uint8ClampedArray(W * H * 4);
+  const step = S / W;
+  const zen = 45 * RAD, azi = 315 * RAD, zf = 1.6;
+  const cz = Math.cos(zen), sz = Math.sin(zen);
+  const cy = 92.66;
+  for (let j = 0; j < H; j++) {
+    const lat = (2 * Math.atan(Math.exp(y1 - (j + 0.5) / H * (y1 - y0))) - Math.PI / 2) / RAD;
+    const r = Math.min(S - 1, Math.max(1, Math.round((la + 1 - lat) * S)));
+    const cx = cy * Math.cos(lat * RAD);
+    const s = Math.max(1, Math.round(step));
+    for (let i = 0; i < W; i++) {
+      const c = Math.min(S - 1, Math.max(1, Math.round((i + 0.5) * step)));
+      const r0 = Math.max(0, r - s), r1 = Math.min(S, r + s), c0 = Math.max(0, c - s), c1 = Math.min(S, c + s);
+      const dzdx = (t[r * SZ + c1] - t[r * SZ + c0]) / ((c1 - c0) * cx) * zf;
+      const dzdy = (t[r0 * SZ + c] - t[r1 * SZ + c]) / ((r1 - r0) * cy) * zf;
+      const slope = Math.atan(Math.hypot(dzdx, dzdy));
+      const aspect = Math.atan2(dzdy, -dzdx);
+      const hs = cz * Math.cos(slope) + sz * Math.sin(slope) * Math.cos(azi - (Math.PI / 2 - aspect));
+      const v = hs - cz;
+      const o = (j * W + i) * 4;
+      if (v < 0) { out[o] = out[o + 1] = out[o + 2] = 0; out[o + 3] = Math.min(200, -v * 340); }
+      else { out[o] = out[o + 1] = out[o + 2] = 255; out[o + 3] = Math.min(150, v * 260); }
+    }
+  }
+  postMessage({ type: "shade", idx, la, lo, W, H, data: out }, [out.buffer]);
+}
+
+function view(m) {
+  const { lat, lon, h, k, rmax, id } = m;
+  const z0 = elev(lat, lon);
+  if (!isFinite(z0)) { postMessage({ type: "view", id, error: "outside" }); return; }
+  const A = 4096, ds = 60, N = Math.floor(rmax / ds) + 1;
+  const zo = z0 + h, Re = R / (1 - k), cosl = Math.cos(lat * RAD);
+  const dAng = 2 * Math.PI / A;
+  const vis = new Uint8Array(A * N);
+  const skyAng = new Float32Array(A), skyDist = new Float32Array(A), skyLat = new Float64Array(A), skyLon = new Float64Array(A), skyZ = new Float32Array(A);
+  const CM = 24;
+  const crA = new Float32Array(A * CM), crD = new Float32Array(A * CM), crN = new Uint8Array(A);
+  let area = 0, far = { d: 0 }, edge = false;
+  for (let a = 0; a < A; a++) {
+    const az = a * dAng;
+    const dlat = Math.cos(az) * ds / R / RAD, dlon = Math.sin(az) * ds / (R * cosl) / RAD;
+    let maxA = -Infinity, maxI = 0, maxZ = z0, pend = -1, pendA = 0, hidRun = 0, nc = 0;
+    for (let i = 1; i < N; i++) {
+      const z = elev(lat + dlat * i, lon + dlon * i);
+      if (!isFinite(z)) { edge = true; break; }
+      const d = i * ds;
+      const ang = (z - d * d / (2 * Re) - zo) / d;
+      if (ang >= maxA) {
+        vis[a * N + i] = 1; maxA = ang; maxI = i; maxZ = z;
+        area += d * dAng * ds;
+        if (d > far.d) far = { d, az, z, lat: lat + dlat * i, lon: lon + dlon * i };
+        pend = i; pendA = ang; hidRun = 0;
+      } else {
+        if (pend > 0 && ++hidRun === 4) {
+          if (nc < CM) { crA[a * CM + nc] = pendA; crD[a * CM + nc] = pend * ds; nc++; }
+          pend = -1;
+        }
+      }
+    }
+    crN[a] = nc;
+    skyAng[a] = maxA; skyDist[a] = maxI * ds; skyZ[a] = maxZ;
+    skyLat[a] = lat + dlat * maxI; skyLon[a] = lon + dlon * maxI;
+  }
+  // viewshed raster in unit Mercator (world = 1024 wide)
+  const W = 1024, mx = (L) => (L + 180) / 360 * W, my = (P) => (1 - mercY(P) / Math.PI) / 2 * W;
+  const dLat = rmax / R / RAD, dLon = rmax / (R * cosl) / RAD;
+  const x0 = mx(lon - dLon), x1 = mx(lon + dLon), y0 = my(lat + dLat), y1 = my(lat - dLat);
+  const big = 1500, sc = big / Math.max(x1 - x0, y1 - y0);
+  const pw = Math.max(1, Math.round((x1 - x0) * sc)), ph = Math.max(1, Math.round((y1 - y0) * sc));
+  const mask = new Uint8ClampedArray(pw * ph);
+  const rN = (N - 1) * ds;
+  for (let j = 0; j < ph; j++) {
+    const yy = y0 + (j + 0.5) / ph * (y1 - y0);
+    const plat = (2 * Math.atan(Math.exp((1 - 2 * yy / W) * Math.PI)) - Math.PI / 2) / RAD;
+    const dy = (plat - lat) * RAD * R;
+    for (let i = 0; i < pw; i++) {
+      const plon = (x0 + (i + 0.5) / pw * (x1 - x0)) / W * 360 - 180;
+      const dx = (plon - lon) * RAD * R * cosl;
+      const d = Math.hypot(dx, dy);
+      if (d > rN) continue;
+      const step = Math.round(d / ds);
+      if (step < 1) { mask[j * pw + i] = 255; continue; }
+      let a = Math.round(Math.atan2(dx, dy) / dAng); a = ((a % A) + A) % A;
+      if (vis[a * N + step]) mask[j * pw + i] = 255;
+    }
+  }
+  last = { lat, lon, zo, Re, cosl };
+  postMessage({ type: "view", id, A, rmax, z0, zo, area, far, edge, bbox: [x0, y0, x1, y1], pw, ph, mask,
+    skyAng, skyDist, skyLat, skyLon, skyZ, crA, crD, crN, CM },
+    [mask.buffer, skyAng.buffer, skyDist.buffer, skyLat.buffer, skyLon.buffer, skyZ.buffer, crA.buffer, crD.buffer, crN.buffer]);
+}
+
+function query(m) {
+  if (!last) return;
+  const { lat, lon, zo, Re, cosl } = last;
+  const dy = (m.lat - lat) * RAD * R, dx = (m.lon - lon) * RAD * R * cosl;
+  const D = Math.hypot(dx, dy);
+  const zt = elev(m.lat, m.lon);
+  if (!isFinite(zt)) { postMessage({ type: "query", qid: m.qid, D, z: NaN }); return; }
+  const ds = 30, n = Math.floor(D / ds);
+  let maxA = -Infinity;
+  for (let i = 1; i <= n; i++) {
+    const f = i * ds / D;
+    const z = elev(lat + (m.lat - lat) * f, lon + (m.lon - lon) * f);
+    if (!isFinite(z)) break;
+    const d = i * ds;
+    const ang = (z - d * d / (2 * Re) - zo) / d;
+    if (ang > maxA) maxA = ang;
+  }
+  const angT = D > 0 ? (zt - D * D / (2 * Re) - zo) / D : Infinity;
+  const hidden = angT >= maxA ? 0 : (maxA - angT) * D;
+  postMessage({ type: "query", qid: m.qid, D, z: zt, hidden });
+}
+
+onmessage = (e) => {
+  const m = e.data;
+  if (m.type === "tile") { tiles[m.idx] = m.data; shade(m.idx); }
+  else if (m.type === "view") view(m);
+  else if (m.type === "query") query(m);
+};
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script>
+(() => {
+  const R = 6371008.8, RAD = Math.PI / 180;
+  const W = 1024;
+  const REG = { la0: 48, la1: 52, lo0: 6, lo1: 11 };
+  const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
+  const state = { lat: 49.9989, lon: 8.2739, h: 24, k: 0.13, rmax: 100000 };
+
+  const nf = (v, d = 0) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const km = (m) => { const k = m / 1000; return k < 10 ? nf(k, 2) : k < 100 ? nf(k, 1) : nf(k, 0); };
+  const len = (m) => m < 1000 ? nf(m, 0) + " m" : km(m) + " km";
+  const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+  const compass = (deg) => COMPASS[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
+  const inRegion = (lat, lon) => lat >= REG.la0 && lat < REG.la1 && lon >= REG.lo0 && lon < REG.lo1;
+  const flatHorizon = (h) => { const re = R / (1 - state.k); return re * Math.acos(re / (re + h)); };
+
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("map"), ctx = canvas.getContext("2d"), wrap = $("mapwrap");
+  const pano = $("pano"), pctx = pano.getContext("2d"), pwrap = $("panowrap");
+  const hIn = $("h"), hR = $("hr");
+  const LOGMIN = Math.log10(0.5), LOGMAX = Math.log10(12000);
+  const toSlider = (h) => Math.round((Math.log10(Math.max(0.5, h)) - LOGMIN) / (LOGMAX - LOGMIN) * 1000);
+  const fromSlider = (v) => { const h = Math.pow(10, LOGMIN + v / 1000 * (LOGMAX - LOGMIN)); return h < 10 ? Math.round(h * 10) / 10 : h < 1000 ? Math.round(h) : Math.round(h / 10) * 10; };
+  const setStatus = (t, err) => { const s = $("status"); s.textContent = t; s.classList.toggle("err", !!err); };
+  const showHint = (t) => { const h = $("hint"); h.textContent = t; h.hidden = !t; };
+
+  // ---------- colors ----------
+  let colors = {};
+  const probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  function rgba(c) { probe.clearRect(0, 0, 1, 1); probe.fillStyle = "#000"; probe.fillStyle = c; probe.fillRect(0, 0, 1, 1); return Array.from(probe.getImageData(0, 0, 1, 1).data); }
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement);
+    for (const n of ["sea", "land", "water", "border", "ink", "muted", "horizon", "vis", "ring", "halo", "sky-top", "sky-low", "pano-near", "pano-far"]) colors[n] = cs.getPropertyValue("--" + n).trim();
+    colors.nearRGB = rgba(colors["pano-near"]); colors.farRGB = rgba(colors["pano-far"]);
+    tintMask();
+  }
+  const onTheme = () => { readColors(); draw(); drawPano(); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", onTheme);
+  new MutationObserver(onTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  // ---------- base map ----------
+  let landPath = null, borderPath = null, waterPath = null, cities = [];
+  function fixWinding(fc) {
+    for (const f of fc.features || [fc]) {
+      const g = f.geometry; if (!g) continue;
+      const polys = g.type === "Polygon" ? [g.coordinates] : g.type === "MultiPolygon" ? g.coordinates : [];
+      for (const rings of polys) if (d3.geoArea({ type: "Polygon", coordinates: rings }) > 2 * Math.PI) rings.forEach(r => r.reverse());
+    }
+    return fc;
+  }
+  const toPath2D = (geo) => { const p = new Path2D(); d3.geoPath(proj, p)(geo); return p; };
+  Promise.all([fetch("data/world.json").then(r => r.json()), fetch("data/lakes.json").then(r => r.json())])
+    .then(([world, lakes]) => {
+      landPath = toPath2D(fixWinding(topojson.feature(world, world.objects.land)));
+      borderPath = toPath2D(topojson.mesh(world, world.objects.countries, (a, b) => a !== b));
+      waterPath = toPath2D(fixWinding(topojson.feature(lakes, lakes.objects["map.geo"])));
+      draw();
+    }).catch(() => {});
+  fetch("data/cities.json").then(r => r.json()).then(rows => {
+    cities = rows.map(([n, c, la, lo, p]) => { const [x, y] = proj([lo, la]); return { n, c, la, lo, p, x, y, key: n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase() }; });
+    draw(); updateFarText();
+  }).catch(() => {});
+  function nearestTown(lat, lon, maxKm = 12) {
+    let best = null, bd = maxKm * 1000;
+    const cosl = Math.cos(lat * RAD);
+    for (const c of cities) {
+      if (Math.abs(c.la - lat) > 0.2 || Math.abs(c.lo - lon) > 0.3) continue;
+      const d = Math.hypot((c.la - lat) * RAD * R, (c.lo - lon) * RAD * R * cosl) / Math.max(1, Math.log10(c.p) - 3);
+      if (d < bd) { bd = d; best = c; }
+    }
+    return best;
+  }
+
+  // ---------- terrain worker ----------
+  const worker = new Worker(URL.createObjectURL(new Blob([$("worker-src").textContent], { type: "text/javascript" })));
+  const shades = [];
+  const tileState = new Map();
+  const tileName = (la, lo) => "dem/N" + la + "E" + String(lo).padStart(3, "0") + ".png";
+  async function loadTile(la, lo) {
+    const idx = (la - REG.la0) * 5 + (lo - REG.lo0);
+    if (tileState.has(idx)) return tileState.get(idx);
+    const p = (async () => {
+      const res = await fetch(tileName(la, lo));
+      if (!res.ok) throw new Error("tile " + res.status);
+      // heights are packed losslessly as (metres + 1000) in the red/green bytes of a PNG
+      const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+      const cv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height;
+      const c2 = cv.getContext("2d", { willReadFrequently: true, colorSpace: "srgb" });
+      c2.drawImage(bmp, 0, 0); bmp.close();
+      const px = c2.getImageData(0, 0, cv.width, cv.height).data;
+      const d = new Int16Array(1201 * 1201);
+      for (let i = 0; i < d.length; i++) d[i] = (px[i * 4] << 8 | px[i * 4 + 1]) - 1000;
+      worker.postMessage({ type: "tile", idx, data: d }, [d.buffer]);
+      return idx;
+    })();
+    tileState.set(idx, p);
+    return p;
+  }
+  function tilesFor(lat, lon, rmax) {
+    const out = [], cosl = Math.cos(lat * RAD);
+    for (let la = REG.la0; la < REG.la1; la++) for (let lo = REG.lo0; lo < REG.lo1; lo++) {
+      const cla = Math.max(la, Math.min(la + 1, lat)), clo = Math.max(lo, Math.min(lo + 1, lon));
+      const d = Math.hypot((cla - lat) * RAD * R, (clo - lon) * RAD * R * cosl);
+      if (d <= rmax + 2000) out.push([d, la, lo]);
+    }
+    return out.sort((a, b) => a[0] - b[0]).map(([, la, lo]) => [la, lo]);
+  }
+
+  let firstFitDone = false;
+  let view = null, viewId = 0, maskCanvas = null, tinted = null, hoverPt = null;
+  const pending = new Map(); let qid = 0;
+  worker.onmessage = async (e) => {
+    const m = e.data;
+    if (m.type === "shade") {
+      const img = await createImageBitmap(new ImageData(m.data, m.W, m.H));
+      const [x0, y0] = proj([m.lo, m.la + 1]), [x1, y1] = proj([m.lo + 1, m.la]);
+      shades.push({ img, x0, y0, x1, y1 });
+      draw();
+    } else if (m.type === "view") {
+      if (m.id !== viewId) return;
+      if (m.error) { setStatus("No terrain data at this spot.", true); return; }
+      view = m;
+      view.sx = new Float32Array(m.A); view.sy = new Float32Array(m.A);
+      for (let a = 0; a < m.A; a++) { const [x, y] = proj([m.skyLon[a], m.skyLat[a]]); view.sx[a] = x; view.sy[a] = y; }
+      maskCanvas = document.createElement("canvas"); maskCanvas.width = m.pw; maskCanvas.height = m.ph;
+      const id = new ImageData(m.pw, m.ph);
+      for (let i = 0; i < m.mask.length; i++) { id.data[i * 4 + 3] = m.mask[i]; id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; }
+      maskCanvas.getContext("2d").putImageData(id, 0, 0);
+      tintMask();
+      updateReadouts();
+      setStatus(m.edge ? "Some directions reach the edge of the terrain data; the view there is cut off." : "");
+      if (!firstFitDone) { firstFitDone = true; fit(); }
+      draw(); drawPano();
+      loadRest();
+    } else if (m.type === "query") {
+      const cb = pending.get(m.qid); pending.delete(m.qid); if (cb) cb(m);
+    }
+  };
+  function tintMask() {
+    if (!maskCanvas) return;
+    tinted = document.createElement("canvas"); tinted.width = maskCanvas.width; tinted.height = maskCanvas.height;
+    const t = tinted.getContext("2d");
+    t.drawImage(maskCanvas, 0, 0); t.globalCompositeOperation = "source-in"; t.fillStyle = colors.vis; t.fillRect(0, 0, tinted.width, tinted.height);
+  }
+  let restStarted = false;
+  async function loadRest() {
+    if (restStarted) return; restStarted = true;
+    for (const [la, lo] of tilesFor(state.lat, state.lon, 1e7)) { try { await loadTile(la, lo); } catch (e) {} }
+  }
+
+  let computeTimer = 0;
+  function compute() {
+    clearTimeout(computeTimer);
+    computeTimer = setTimeout(async () => {
+      const id = ++viewId;
+      if (!inRegion(state.lat, state.lon)) { setStatus("This spot is outside the terrain data (48–52° N, 6–11° E).", true); return; }
+      const need = tilesFor(state.lat, state.lon, state.rmax);
+      let done = 0;
+      setStatus("Loading terrain 0 of " + need.length + "…");
+      try {
+        await Promise.all(need.map(([la, lo]) => loadTile(la, lo).then(() => { done++; if (id === viewId) setStatus("Loading terrain " + done + " of " + need.length + "…"); })));
+      } catch (e) { setStatus("Terrain data failed to load. Reload the page to try again.", true); return; }
+      if (id !== viewId) return;
+      setStatus("Tracing 4,096 sightlines…");
+      worker.postMessage({ type: "view", id, lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax });
+    }, 120);
+  }
+
+  // ---------- readouts ----------
+  function updateFarText() {
+    if (!view || !view.far.d) return;
+    const t = nearestTown(view.far.lat, view.far.lon, 15);
+    $("farSub").textContent = compass(view.far.az / RAD) + " · " + nf(view.far.z, 0) + " m ASL" + (t ? " · near " + t.n : "");
+  }
+  function updateReadouts() {
+    const v = view;
+    $("farKm").textContent = v.far.d ? km(v.far.d) : "–";
+    updateFarText();
+    $("ground").textContent = nf(v.z0, 0) + " m ASL";
+    $("eye").textContent = nf(v.zo, 0) + " m";
+    const disk = Math.PI * v.rmax * v.rmax;
+    $("area").textContent = nf(v.area / 1e6, 0) + " km² (" + nf(v.area / disk * 100, v.area / disk < 0.1 ? 1 : 0) + "%)";
+    const sd = Array.from(v.skyDist).sort((a, b) => a - b);
+    $("skyMed").textContent = len(sd[sd.length >> 1]);
+    $("flat").textContent = len(flatHorizon(state.h));
+  }
+
+  // ---------- map view ----------
+  let T = d3.zoomIdentity, dpr = 1, cw = 0, ch = 0;
+  const zoom = d3.zoom().scaleExtent([0.5, 400000]).on("zoom", (e) => { T = e.transform; draw(); });
+  const sel = d3.select(canvas).call(zoom).on("dblclick.zoom", null);
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    cw = wrap.clientWidth; ch = wrap.clientHeight;
+    canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
+    zoom.extent([[0, 0], [cw, ch]]).translateExtent([[-W, -64], [2 * W, W + 64]]);
+    draw();
+  }
+  new ResizeObserver(resize).observe(wrap);
+  const circleGeo = (m) => d3.geoCircle().center([state.lon, state.lat]).radius(Math.min(179, m / R / RAD)).precision(0.2)();
+  function fitRadius() {
+    if (!view) return Math.max(state.rmax, flatHorizon(state.h));
+    const sd = Array.from(view.skyDist).sort((a, b) => a - b);
+    return Math.min(state.rmax, Math.max(flatHorizon(state.h), sd[Math.floor(sd.length * 0.9)] * 1.15, 5000));
+  }
+  function fit(animate = true) {
+    if (!cw) return;
+    const [[x0, y0], [x1, y1]] = d3.geoPath(proj).bounds(circleGeo(fitRadius() * 1.05));
+    const k = Math.min(cw / (x1 - x0), ch / (y1 - y0)) * 0.95;
+    const t = d3.zoomIdentity.translate(cw / 2, ch / 2).scale(k).translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
+    (animate ? sel.transition().duration(600) : sel).call(zoom.transform, t);
+  }
+
+  let raf = 0;
+  function draw() { if (!raf) raf = requestAnimationFrame(render); }
+  function render() {
+    raf = 0; if (!cw) return;
+    const k = T.k;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = colors.sea; ctx.fillRect(0, 0, cw, ch);
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * T.x, dpr * T.y);
+    if (landPath) { ctx.fillStyle = colors.land; ctx.fill(landPath); }
+    ctx.imageSmoothingEnabled = true;
+    for (const s of shades) ctx.drawImage(s.img, s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
+    if (waterPath) { ctx.fillStyle = colors.water; ctx.fill(waterPath); }
+    if (borderPath) { ctx.strokeStyle = colors.border; ctx.lineWidth = 1 / k; ctx.setLineDash([4 / k, 3 / k]); ctx.stroke(borderPath); ctx.setLineDash([]); }
+    // terrain data edge
+    { const [a, b] = proj([REG.lo0, REG.la1]), [c, d] = proj([REG.lo1, REG.la0]);
+      ctx.strokeStyle = colors.muted; ctx.lineWidth = 1.2 / k; ctx.setLineDash([1.5 / k, 3 / k]); ctx.strokeRect(a, b, c - a, d - b); ctx.setLineDash([]); }
+    if (view && tinted) {
+      const [x0, y0, x1, y1] = view.bbox;
+      ctx.imageSmoothingEnabled = k * (x1 - x0) / tinted.width < 3;
+      ctx.drawImage(tinted, x0, y0, x1 - x0, y1 - y0);
+      ctx.imageSmoothingEnabled = true;
+    }
+    ctx.strokeStyle = colors.ring; ctx.lineWidth = 1.4 / k; ctx.setLineDash([6 / k, 5 / k]);
+    ctx.stroke(toPath2D(circleGeo(flatHorizon(state.h)))); ctx.setLineDash([]);
+    ctx.strokeStyle = colors.muted; ctx.lineWidth = 0.8 / k; ctx.stroke(toPath2D(circleGeo(state.rmax)));
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (view && view.lat === undefined) {}
+    if (view) {
+      ctx.fillStyle = colors.horizon;
+      const sz = 1.8;
+      for (let a = 0; a < view.A; a++) {
+        const x = view.sx[a] * k + T.x, y = view.sy[a] * k + T.y;
+        if (x < -2 || y < -2 || x > cw + 2 || y > ch + 2) continue;
+        ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+      }
+    }
+    drawCities(k);
+    const [ox, oy] = proj([state.lon, state.lat]);
+    marker(ox * k + T.x, oy * k + T.y, colors.horizon, 6);
+    if (hoverPt) { const [hx, hy] = proj(hoverPt); marker(hx * k + T.x, hy * k + T.y, colors.ink, 4); }
+    drawScale(k);
+  }
+  function marker(sx, sy, col, r) {
+    ctx.fillStyle = col; ctx.strokeStyle = colors.halo; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, 2 * Math.PI); ctx.stroke(); ctx.fill();
+    ctx.strokeStyle = col; ctx.lineWidth = 1.2;
+    const a = r + 2, b = r + 7;
+    ctx.beginPath(); ctx.moveTo(sx - b, sy); ctx.lineTo(sx - a, sy); ctx.moveTo(sx + a, sy); ctx.lineTo(sx + b, sy);
+    ctx.moveTo(sx, sy - b); ctx.lineTo(sx, sy - a); ctx.moveTo(sx, sy + a); ctx.lineTo(sx, sy + b); ctx.stroke();
+  }
+  function drawCities(k) {
+    if (!cities.length) return;
+    const kmPerPx = 40075 / (W * k);
+    const minPop = kmPerPx > 20 ? 2e6 : kmPerPx > 8 ? 5e5 : kmPerPx > 3 ? 1.5e5 : kmPerPx > 1 ? 4e4 : kmPerPx > 0.35 ? 1.2e4 : 5000;
+    const occ = new Set();
+    ctx.font = "500 11.5px 'IBM Plex Sans', system-ui, sans-serif";
+    ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+    let shown = 0;
+    for (const c of cities) {
+      if (c.p < minPop) break;
+      const x = c.x * k + T.x, y = c.y * k + T.y;
+      if (x < -40 || y < -20 || x > cw + 40 || y > ch + 20) continue;
+      const w = ctx.measureText(c.n).width;
+      const gx0 = Math.floor((x - 4) / 26), gx1 = Math.floor((x + w + 10) / 26), gy = Math.floor(y / 18);
+      let hit = false;
+      for (let gx = gx0; gx <= gx1 && !hit; gx++) if (occ.has(gx + "," + gy)) hit = true;
+      if (hit) continue;
+      for (let gx = gx0; gx <= gx1; gx++) occ.add(gx + "," + gy);
+      ctx.fillStyle = colors.ink; ctx.beginPath(); ctx.arc(x, y, c.p > 1e6 ? 3 : 2.2, 0, 2 * Math.PI); ctx.fill();
+      ctx.lineWidth = 3; ctx.strokeStyle = colors.halo; ctx.strokeText(c.n, x + 6, y);
+      ctx.fillStyle = colors.ink; ctx.fillText(c.n, x + 6, y);
+      if (++shown > 200) break;
+    }
+  }
+  function drawScale(k) {
+    const mPerPx = 2 * Math.PI * R * Math.cos(state.lat * RAD) / (W * k);
+    const target = mPerPx * 110, p = Math.pow(10, Math.floor(Math.log10(target)));
+    const nice = [1, 2, 5, 10].map(m => m * p).filter(v => v <= target).pop() || p;
+    $("scaleBar").style.width = (nice / mPerPx).toFixed(1) + "px";
+    $("scaleTxt").textContent = len(nice);
+  }
+
+  // ---------- panorama ----------
+  let pw = 0, ph = 0, pdpr = 1, panoScale = null;
+  function resizePano() {
+    pdpr = window.devicePixelRatio || 1; pw = pwrap.clientWidth; ph = pwrap.clientHeight;
+    pano.width = Math.round(pw * pdpr); pano.height = Math.round(ph * pdpr); drawPano();
+  }
+  new ResizeObserver(resizePano).observe(pwrap);
+  const deg = (t) => Math.atan(t) / RAD;
+  function drawPano() {
+    if (!pw) return;
+    const g = pctx;
+    g.setTransform(pdpr, 0, 0, pdpr, 0, 0);
+    const top = 26, bot = 22, left = 40, right = 8, H = ph - top - bot, Wd = pw - left - right;
+    const grad = g.createLinearGradient(0, top, 0, ph);
+    grad.addColorStop(0, colors["sky-top"]); grad.addColorStop(1, colors["sky-low"]);
+    g.fillStyle = grad; g.fillRect(0, 0, pw, ph);
+    if (!view) return;
+    const A = view.A;
+    let hi = -Infinity, lo = Infinity;
+    for (let a = 0; a < A; a++) { const d = deg(view.skyAng[a]); if (d > hi) hi = d; if (d < lo) lo = d; }
+    const span = Math.max(0.3, hi - lo);
+    const yHi = hi + span * 0.25, yLo = lo - span * 0.6;
+    const Y = (d) => top + (yHi - d) / (yHi - yLo) * H;
+    panoScale = { left, Wd, top, H, Y, A };
+    const n = colors.nearRGB, f = colors.farRGB;
+    const colW = Wd / A;
+    // terrain silhouette coloured by distance to the skyline ridge
+    for (let x = 0; x < Wd; x++) {
+      const a = Math.floor(x / Wd * A);
+      const t = Math.min(1, view.skyDist[a] / view.rmax);
+      const c = n.map((v, i) => Math.round(v + (f[i] - v) * Math.sqrt(t)));
+      g.fillStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
+      const y = Y(deg(view.skyAng[a]));
+      g.fillRect(left + x, y, 1.2, top + H - y);
+    }
+    // nearer ridges inside the silhouette
+    g.fillStyle = colors["sky-low"];
+    for (let x = 0; x < Wd; x++) {
+      const a = Math.floor(x / Wd * A), nc = view.crN[a];
+      for (let i = 0; i < nc; i++) {
+        const d = view.crD[a * view.CM + i];
+        if (d >= view.skyDist[a] - 1) continue;
+        const y = Y(deg(view.crA[a * view.CM + i]));
+        if (y > top + H) continue;
+        g.globalAlpha = 0.25 + 0.5 * Math.min(1, d / view.rmax * 2);
+        g.fillRect(left + x, y, 1.2, 1);
+      }
+    }
+    g.globalAlpha = 1;
+    // skyline line
+    g.fillStyle = colors.horizon;
+    for (let x = 0; x < Wd; x++) { const a = Math.floor(x / Wd * A); g.fillRect(left + x, Y(deg(view.skyAng[a])) - 1, 1.2, 2); }
+    // eye level and grid
+    g.font = "11px 'IBM Plex Mono', ui-monospace, monospace"; g.textBaseline = "middle"; g.textAlign = "right";
+    const stepDeg = [0.1, 0.2, 0.5, 1, 2, 5, 10].find(s => (yHi - yLo) / s <= 5) || 10;
+    g.strokeStyle = colors.muted; g.lineWidth = 1; g.fillStyle = colors.muted;
+    for (let v = Math.ceil(yLo / stepDeg) * stepDeg; v <= yHi; v += stepDeg) {
+      const y = Y(v); g.globalAlpha = Math.abs(v) < 1e-9 ? 0.8 : 0.25;
+      g.beginPath(); g.setLineDash(Math.abs(v) < 1e-9 ? [] : [2, 3]); g.moveTo(left, y); g.lineTo(left + Wd, y); g.stroke();
+      g.globalAlpha = 1; g.fillText((v > 0 ? "+" : "") + nf(v, stepDeg < 1 ? 1 : 0) + "°", left - 4, y);
+    }
+    g.setLineDash([]);
+    // compass
+    g.textAlign = "center"; g.fillStyle = colors.ink; g.font = "600 11px 'IBM Plex Sans', system-ui, sans-serif";
+    ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"].forEach((lab, i) => {
+      const x = left + i / 8 * Wd;
+      g.fillText(lab, Math.min(pw - 8, Math.max(left + 6, x)), ph - 10);
+      g.fillRect(x - 0.5, top + H, 1, 4);
+    });
+    if (hoverAz != null) { g.fillStyle = colors.ink; g.globalAlpha = 0.6; g.fillRect(left + hoverAz / 360 * Wd - 0.5, top, 1, H); g.globalAlpha = 1; }
+  }
+  let hoverAz = null;
+  const ptip = $("ptip");
+  pano.addEventListener("pointermove", (e) => {
+    if (!view || !panoScale) return;
+    const r = pano.getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    const fx = (px - panoScale.left) / panoScale.Wd;
+    if (fx < 0 || fx >= 1) { ptip.hidden = true; return; }
+    const a = Math.floor(fx * view.A);
+    hoverAz = fx * 360;
+    hoverPt = [view.skyLon[a], view.skyLat[a]];
+    const t = nearestTown(view.skyLat[a], view.skyLon[a], 12);
+    ptip.textContent = nf(hoverAz, 0) + "° " + compass(hoverAz) + " · ridge " + km(view.skyDist[a]) + " km away · " + nf(view.skyZ[a], 0) + " m ASL" + (t ? " · near " + t.n : "");
+    ptip.hidden = false;
+    const tw = ptip.offsetWidth;
+    ptip.style.left = Math.max(4, Math.min(px + 12, pw - tw - 6)) + "px";
+    ptip.style.top = Math.max(4, py - 34) + "px";
+    draw(); drawPano();
+  });
+  pano.addEventListener("pointerleave", () => { ptip.hidden = true; hoverAz = null; hoverPt = null; draw(); drawPano(); });
+
+  // ---------- inputs ----------
+  function changed(refit) {
+    $("coords").textContent = nf(Math.abs(state.lat), 4) + "° " + (state.lat >= 0 ? "N" : "S") + ", " + nf(Math.abs(state.lon), 4) + "° " + (state.lon >= 0 ? "E" : "W");
+    for (const b of document.querySelectorAll("#presets .chip")) b.setAttribute("aria-pressed", String(+b.dataset.h === state.h));
+    $("flat").textContent = len(flatHorizon(state.h));
+    try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch (e) {}
+    if (refit) fit();
+    draw(); compute();
+  }
+  function setHeight(h, from) {
+    if (!isFinite(h) || h <= 0) return;
+    state.h = Math.min(12000, h);
+    if (from !== "num") hIn.value = state.h;
+    if (from !== "range") hR.value = toSlider(state.h);
+    changed();
+  }
+  hIn.addEventListener("input", () => setHeight(parseFloat(hIn.value), "num"));
+  hR.addEventListener("input", () => setHeight(fromSlider(+hR.value), "range"));
+  $("refr").addEventListener("change", (e) => { state.k = parseFloat(e.target.value); changed(); });
+  $("rmax").addEventListener("change", (e) => { state.rmax = +e.target.value; changed(true); });
+  $("presets").addEventListener("click", (e) => { const b = e.target.closest(".chip"); if (b) setHeight(+b.dataset.h); });
+  $("fit").addEventListener("click", () => fit());
+
+  function placeAt(lat, lon) {
+    if (!inRegion(lat, lon)) { showHint("Terrain data covers 48–52° N, 6–11° E (the dotted box). Pick a spot inside it."); return false; }
+    showHint(""); state.lat = lat; state.lon = lon; changed(); return true;
+  }
+  canvas.addEventListener("click", (e) => {
+    const r = canvas.getBoundingClientRect();
+    const ll = proj.invert(T.invert([e.clientX - r.left, e.clientY - r.top]));
+    if (ll && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
+  });
+
+  const tip = $("tip");
+  let lastQ = 0;
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse" || !view) return;
+    const r = canvas.getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    const ll = proj.invert(T.invert([px, py]));
+    if (!ll) return;
+    const now = performance.now(); if (now - lastQ < 40) return; lastQ = now;
+    const id = ++qid;
+    pending.set(id, (m) => {
+      if (id !== qid) return;
+      tip.textContent = "";
+      tip.append(document.createTextNode(len(m.D) + " away"));
+      if (isFinite(m.z)) {
+        tip.append(document.createTextNode(" · " + nf(m.z, 0) + " m ASL · "));
+        const b = document.createElement("b");
+        b.textContent = m.hidden === 0 ? "visible" : "hidden, " + len(m.hidden) + " below your sightline";
+        tip.append(b);
+      }
+      tip.hidden = false;
+      const tw = tip.offsetWidth;
+      tip.style.left = Math.min(px + 14, cw - tw - 8) + "px";
+      tip.style.top = (py + 16) + "px";
+    });
+    worker.postMessage({ type: "query", qid: id, lat: ll[1], lon: ll[0] });
+  });
+  canvas.addEventListener("pointerleave", () => { tip.hidden = true; qid++; });
+
+  // ---------- search ----------
+  const q = $("q"), res = $("results");
+  let matches = [], active = 0;
+  function renderResults() {
+    res.innerHTML = "";
+    matches.forEach((c, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = (i === active ? "active " : "") + (inRegion(c.la, c.lo) ? "" : "out");
+      const s = document.createElement("span"); s.textContent = c.n + ", " + c.c;
+      const sm = document.createElement("small"); sm.textContent = inRegion(c.la, c.lo) ? nf(c.p) + " pop." : "no terrain data";
+      b.append(s, sm);
+      b.addEventListener("mousedown", (ev) => { ev.preventDefault(); choose(c); });
+      res.append(b);
+    });
+    res.hidden = !matches.length;
+  }
+  function choose(c) { res.hidden = true; q.value = c.n + ", " + c.c; if (placeAt(c.la, c.lo)) { firstFitDone = false; fit(); } }
+  q.addEventListener("input", () => {
+    const s = q.value.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+    active = 0;
+    if (s.length < 2) { matches = []; renderResults(); return; }
+    const inR = [], outR = [];
+    for (const c of cities) if (c.key.startsWith(s)) { (inRegion(c.la, c.lo) ? inR : outR).push(c); if (inR.length >= 8) break; }
+    matches = inR.concat(outR).slice(0, 8); renderResults();
+  });
+  q.addEventListener("keydown", (e) => {
+    if (res.hidden) return;
+    if (e.key === "ArrowDown") { active = Math.min(matches.length - 1, active + 1); renderResults(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { active = Math.max(0, active - 1); renderResults(); e.preventDefault(); }
+    else if (e.key === "Enter" && matches[active]) { choose(matches[active]); e.preventDefault(); }
+    else if (e.key === "Escape") res.hidden = true;
+  });
+  q.addEventListener("blur", () => { res.hidden = true; });
+
+  // ---------- start ----------
+  try {
+    const s = JSON.parse(localStorage.getItem("horizon-v3") || "null");
+    if (s && inRegion(s.lat, s.lon) && isFinite(s.h)) Object.assign(state, s);
+  } catch (e) {}
+  hIn.value = state.h; hR.value = toSlider(state.h);
+  $("refr").value = String(state.k); if (!$("refr").value) { state.k = 0.13; $("refr").value = "0.13"; }
+  $("rmax").value = String(state.rmax); if (!$("rmax").value) { state.rmax = 100000; $("rmax").value = "100000"; }
+  readColors();
+  resize(); resizePano();
+  changed();
+  requestAnimationFrame(() => fit(false));
+})();
+</script>
+
+</body></html>
