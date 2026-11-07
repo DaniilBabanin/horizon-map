@@ -74,7 +74,7 @@ input[type="range"] { width: 100%; accent-color: var(--horizon); }
 }
 .chip:hover { border-color: var(--horizon); }
 .chip[aria-pressed="true"] { background: var(--horizon); border-color: var(--horizon); color: var(--panel); }
-.search { position: relative; }
+.search { position: relative; flex: 1 1 180px; }
 .results { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); background: var(--field); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
 .results button { display: flex; justify-content: space-between; width: 100%; text-align: left; border: 0; background: transparent; color: var(--ink); font: 14px var(--f-body); padding: 8px 10px; cursor: pointer; gap: 8px; }
 .results button:hover, .results button.active { background: var(--vis); }
@@ -130,9 +130,12 @@ canvas { display: block; width: 100%; height: 100%; }
 
     <div class="group">
       <label class="label" for="q">Find a place</label>
-      <div class="search">
-        <input type="text" id="q" placeholder="Town, e.g. Bad Homburg" autocomplete="off">
-        <div class="results" id="results" hidden></div>
+      <div class="row">
+        <div class="search">
+          <input type="text" id="q" placeholder="Town or coordinates, e.g. 50.11, 8.68" autocomplete="off">
+          <div class="results" id="results" hidden></div>
+        </div>
+        <button class="chip" id="locate" type="button">Use my location</button>
       </div>
       <div class="sub" id="coords">49.9989° N, 8.2739° E</div>
     </div>
@@ -192,6 +195,14 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
 
     <div class="group">
+      <span class="label">Peak names</span>
+      <div class="chips" id="namepresets">
+        <button class="chip" data-names="local">Local</button>
+        <button class="chip" data-names="en">English</button>
+      </div>
+    </div>
+
+    <div class="group">
       <label class="label" for="rmax">Look out to</label>
       <select id="rmax">
         <option value="50000">50 km</option>
@@ -211,7 +222,7 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
 
     <div class="note">
-      <p>Hover the map to check any spot (long-press on a touch screen): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama to find which ridge forms the skyline in that direction.</p>
+      <p>Hover the map to check any spot (on a touch screen: tap to check, long-press to stand there): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama to find which ridge forms the skyline in that direction.</p>
       <p>Terrain is AWS Terrain Tiles (Mapzen Terrarium: SRTM and other sources, about 100 m per pixel), worldwide between 85° S and 85° N. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
     </div>
   </aside>
@@ -235,6 +246,7 @@ canvas { display: block; width: 100%; height: 100%; }
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="coords.js"></script>
 <script>
 (() => {
   const R = 6371008.8, RAD = Math.PI / 180;
@@ -245,7 +257,7 @@ canvas { display: block; width: 100%; height: 100%; }
   const TILE_SIDE = 256;
   const MAX_TILE_FETCHES = 8;
   const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
-  const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000 };
+  const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000, names: "local" };
   // Projects a [lon, lat] point with its longitude unwrapped to within ±180° of the observer,
   // so a view across the antimeridian stays in one piece; x may then fall outside [0, W].
   // d3.geoMercator wraps its input longitude into [-180, 180), so the world copies are added
@@ -428,6 +440,7 @@ canvas { display: block; width: 100%; height: 100%; }
   const PEAK_CELL_DEGREES = 2;
   const PEAK_TOOLTIP_AZIMUTH = 1; // degrees; hover names the nearest peak within this
   let peakList = [];
+  let peakRowsForView = null;
   let peakIndexPromise = null;
   const peakCellPromises = new Map();
   function peakCellName(south, west) {
@@ -488,7 +501,15 @@ canvas { display: block; width: 100%; height: 100%; }
     if (v.id !== viewId) return;
     const rows = [];
     for (const cell of cellRows) for (const row of cell) rows.push(row);
-    worker.postMessage({ type: "peaks", id: v.id, rows });
+    peakRowsForView = rows;
+    postPeaks(v, rows);
+  }
+  // The worker only needs one name per peak. English is used when a cell has a fifth
+  // element (the English name) and the toggle asks for it; four-element cells stay local.
+  function postPeaks(v, rows) {
+    const english = state.names === "en";
+    const named = rows.map((row) => [english && row[4] ? row[4] : row[0], row[1], row[2], row[3]]);
+    worker.postMessage({ type: "peaks", id: v.id, rows: named });
   }
   function peakLabelText(peak) {
     return peak.ele == null ? peak.name : peak.name + " " + nf(peak.ele, 0) + " m";
@@ -532,6 +553,7 @@ canvas { display: block; width: 100%; height: 100%; }
       if (m.error) { setStatus("No terrain data at this spot.", true); return; }
       view = m;
       peakList = [];
+      peakRowsForView = null;
       view.sx = new Float32Array(m.A); view.sy = new Float32Array(m.A);
       for (let a = 0; a < m.A; a++) { const [x, y] = projNear([m.skyLon[a], m.skyLat[a]]); view.sx[a] = x; view.sy[a] = y; }
       maskCanvas = document.createElement("canvas"); maskCanvas.width = m.pw; maskCanvas.height = m.ph;
@@ -950,13 +972,23 @@ canvas { display: block; width: 100%; height: 100%; }
     $("coords").textContent = nf(Math.abs(state.lat), 4) + "° " + (state.lat >= 0 ? "N" : "S") + ", " + nf(Math.abs(state.lon), 4) + "° " + (state.lon >= 0 ? "E" : "W");
     markChips("#presets", "h", state.h);
     markChips("#tpresets", "t", state.t);
+    markNameChips();
     updateLabels();
     $("flat").textContent = len(flatHorizon(state.h));
-    try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch {}
-    const params = new URLSearchParams({ lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, t: state.t });
-    history.replaceState(null, "", "#" + params);
+    persistState();
     if (refit) fit();
     draw(); compute();
+  }
+  // The state lives in localStorage and the URL hash. Names only go into the hash when
+  // English is chosen, so an old link or an old saved state stays on the local names.
+  function persistState() {
+    try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch {}
+    const params = new URLSearchParams({ lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, t: state.t });
+    if (state.names === "en") params.set("names", "en");
+    history.replaceState(null, "", "#" + params);
+  }
+  function markNameChips() {
+    for (const b of document.querySelectorAll("#namepresets .chip")) b.setAttribute("aria-pressed", String(b.dataset.names === state.names));
   }
   function setHeight(h, from) {
     if (!isFinite(h) || h <= 0) return;
@@ -978,12 +1010,62 @@ canvas { display: block; width: 100%; height: 100%; }
   $("rmax").addEventListener("change", (e) => { state.rmax = +e.target.value; changed(true); });
   onChipClick("presets", "h", setHeight);
   onChipClick("tpresets", "t", setTarget);
+  // Changing the name language only re-posts the peaks for the view already on screen.
+  function setPeakNames(names) {
+    if (names !== "local" && names !== "en") return;
+    if (names === state.names) return;
+    state.names = names;
+    markNameChips();
+    persistState();
+    if (view && peakRowsForView) postPeaks(view, peakRowsForView);
+  }
+  $("namepresets").addEventListener("click", (e) => {
+    const b = e.target.closest(".chip");
+    if (b) setPeakNames(b.dataset.names);
+  });
   $("fit").addEventListener("click", () => fit());
 
   function placeAt(lat, lon) {
     if (!validPlace(lat)) { showHint("Pick a spot between 85° S and 85° N."); return false; }
     showHint(""); state.lat = lat; state.lon = lon; changed(); return true;
   }
+
+  // The page is often opened over plain HTTP on the LAN, where browsers hide the
+  // geolocation API behind a secure context, so explain that instead of failing silently.
+  const locateButton = $("locate");
+  function useDeviceLocation() {
+    if (!window.isSecureContext) {
+      setStatus("Device location needs HTTPS (or localhost).", true);
+      return;
+    }
+    if (!navigator.geolocation) {
+      setStatus("This browser has no location service.", true);
+      return;
+    }
+    locateButton.disabled = true;
+    locateButton.textContent = "Locating…";
+    const restoreLocateButton = () => {
+      locateButton.disabled = false;
+      locateButton.textContent = "Use my location";
+    };
+    navigator.geolocation.getCurrentPosition((position) => {
+      restoreLocateButton();
+      const { latitude, longitude, accuracy } = position.coords;
+      if (!placeAt(latitude, longitude)) {
+        setStatus("Device location is outside 85° S to 85° N.", true);
+        return;
+      }
+      firstFitDone = false;
+      fit();
+      setStatus("Location ±" + nf(Math.round(accuracy), 0) + " m");
+    }, (error) => {
+      restoreLocateButton();
+      setStatus(error.code === 1 ? "Location permission denied."
+        : error.code === 3 ? "Location timed out."
+          : "Location unavailable.", true);
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+  }
+  locateButton.addEventListener("click", useDeviceLocation);
 
   const tip = $("tip");
   let lastQ = 0;
@@ -1010,33 +1092,41 @@ canvas { display: block; width: 100%; height: 100%; }
     worker.postMessage({ type: "query", qid: id, lat: ll[1], lon: ll[0] });
   }
 
-  // Touch and pen have no hover, so a long press runs the same query the mouse hover does.
+  // Touch and pen have no hover: a tap checks the spot (the mouse hover), and a long
+  // press stands there (the mouse click). More movement is a pan or pinch and does neither.
   const LONG_PRESS_MS = 500;  // common Android/iOS long-press duration
   const TOUCH_SLOP_PX = 10;   // typical touch slop; more movement is a pan or pinch
   let pressTimer = 0, pressStart = null, longPressFired = false, pointerKind = "mouse";
+  const activeTouchPointers = new Set();
   function cancelPress() {
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = 0; }
     pressStart = null;
   }
+  function placeFromClient(clientX, clientY) {
+    const r = canvas.getBoundingClientRect();
+    const ll = invertNear(T.invert([clientX - r.left, clientY - r.top]));
+    if (ll && isFinite(ll[0]) && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
+  }
 
   canvas.addEventListener("click", (e) => {
     if (longPressFired) { longPressFired = false; return; }
-    const r = canvas.getBoundingClientRect();
-    const ll = invertNear(T.invert([e.clientX - r.left, e.clientY - r.top]));
-    if (ll && isFinite(ll[0]) && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
+    if (pointerKind !== "mouse") return;
+    placeFromClient(e.clientX, e.clientY);
   });
   canvas.addEventListener("pointerdown", (e) => {
     pointerKind = e.pointerType;
     tip.hidden = true;
     cancelPress();
     longPressFired = false;
-    if ((e.pointerType !== "touch" && e.pointerType !== "pen") || !view) return;
-    const r = canvas.getBoundingClientRect();
-    const px = e.clientX - r.left, py = e.clientY - r.top;
-    pressStart = [e.clientX, e.clientY];
+    if (e.pointerType === "mouse") activeTouchPointers.clear();
+    else activeTouchPointers.add(e.pointerId);
+    // A second finger means a pinch, not a long press.
+    if ((e.pointerType !== "touch" && e.pointerType !== "pen") || activeTouchPointers.size > 1) return;
+    const pressClientX = e.clientX, pressClientY = e.clientY;
+    pressStart = [pressClientX, pressClientY];
     pressTimer = setTimeout(() => {
       pressTimer = 0; pressStart = null; longPressFired = true;
-      queryAt(px, py);
+      placeFromClient(pressClientX, pressClientY);
     }, LONG_PRESS_MS);
   });
   canvas.addEventListener("pointermove", (e) => {
@@ -1047,29 +1137,64 @@ canvas { display: block; width: 100%; height: 100%; }
     const now = performance.now(); if (now - lastQ < 40) return; lastQ = now;
     queryAt(px, py);
   });
-  canvas.addEventListener("pointerup", cancelPress);
-  canvas.addEventListener("pointercancel", () => { cancelPress(); longPressFired = false; });
+  canvas.addEventListener("pointerup", (e) => {
+    const wasTap = pressTimer && pressStart
+      && Math.hypot(e.clientX - pressStart[0], e.clientY - pressStart[1]) <= TOUCH_SLOP_PX;
+    cancelPress();
+    if (e.pointerType !== "mouse") activeTouchPointers.delete(e.pointerId);
+    if (!wasTap || longPressFired || !view) return;
+    const r = canvas.getBoundingClientRect();
+    queryAt(e.clientX - r.left, e.clientY - r.top);
+  });
+  canvas.addEventListener("pointercancel", (e) => {
+    cancelPress();
+    longPressFired = false;
+    if (e.pointerType !== "mouse") activeTouchPointers.delete(e.pointerId);
+  });
   canvas.addEventListener("pointerleave", (e) => { if (e.pointerType !== "mouse") return; tip.hidden = true; qid++; });
   canvas.addEventListener("contextmenu", (e) => { if (pointerKind !== "mouse") e.preventDefault(); });
 
   // ---------- search ----------
   const q = $("q"), res = $("results");
-  let matches = [], active = 0;
+  let matches = [], active = 0, coordinateMatch = null;
+  function coordinateLabel(lat, lon) {
+    return "Coordinates " + nf(Math.abs(lat), 4) + "° " + (lat >= 0 ? "N" : "S") + ", " + nf(Math.abs(lon), 4) + "° " + (lon >= 0 ? "E" : "W");
+  }
+  function searchEntries() { return coordinateMatch ? [coordinateMatch, ...matches] : matches; }
   function renderResults() {
     res.innerHTML = "";
-    matches.forEach((c, i) => {
+    const entries = searchEntries();
+    entries.forEach((c, i) => {
       const b = document.createElement("button");
       b.type = "button"; b.className = i === active ? "active" : "";
-      const s = document.createElement("span"); s.textContent = c.n + ", " + c.c;
-      const sm = document.createElement("small"); sm.textContent = nf(c.p) + " pop.";
-      b.append(s, sm);
+      if (c.coordinate) {
+        const s = document.createElement("span"); s.textContent = c.label;
+        b.append(s);
+      } else {
+        const s = document.createElement("span"); s.textContent = c.n + ", " + c.c;
+        const sm = document.createElement("small"); sm.textContent = nf(c.p) + " pop.";
+        b.append(s, sm);
+      }
       b.addEventListener("mousedown", (ev) => { ev.preventDefault(); choose(c); });
       res.append(b);
     });
-    res.hidden = !matches.length;
+    res.hidden = !entries.length;
   }
-  function choose(c) { res.hidden = true; q.value = c.n + ", " + c.c; if (placeAt(c.la, c.lo)) { firstFitDone = false; fit(); } }
+  function choose(c) {
+    res.hidden = true;
+    if (c.coordinate) {
+      q.value = c.label;
+      if (placeAt(c.lat, c.lon)) { firstFitDone = false; fit(); }
+      return;
+    }
+    q.value = c.n + ", " + c.c;
+    if (placeAt(c.la, c.lo)) { firstFitDone = false; fit(); }
+  }
   function runSearch() {
+    const point = parseCoordinates(q.value);
+    coordinateMatch = point
+      ? { coordinate: true, lat: point.lat, lon: point.lon, label: coordinateLabel(point.lat, point.lon) }
+      : null;
     const s = q.value.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
     active = 0;
     if (s.length < 2) { matches = []; renderResults(); return; }
@@ -1093,9 +1218,10 @@ canvas { display: block; width: 100%; height: 100%; }
   q.addEventListener("input", () => { runSearch(); loadAllCities(); });
   q.addEventListener("keydown", (e) => {
     if (res.hidden) return;
-    if (e.key === "ArrowDown") { active = Math.min(matches.length - 1, active + 1); renderResults(); e.preventDefault(); }
+    const entries = searchEntries();
+    if (e.key === "ArrowDown") { active = Math.min(entries.length - 1, active + 1); renderResults(); e.preventDefault(); }
     else if (e.key === "ArrowUp") { active = Math.max(0, active - 1); renderResults(); e.preventDefault(); }
-    else if (e.key === "Enter" && matches[active]) { choose(matches[active]); e.preventDefault(); }
+    else if (e.key === "Enter" && entries[active]) { choose(entries[active]); e.preventDefault(); }
     else if (e.key === "Escape") res.hidden = true;
   });
   q.addEventListener("blur", () => { res.hidden = true; });
@@ -1110,17 +1236,20 @@ canvas { display: block; width: 100%; height: 100%; }
     if (isFinite(k)) state.k = k;
     if (isFinite(rmax)) state.rmax = rmax;
     if (isFinite(t) && t >= 0 && t <= 1000) state.t = t;
+    state.names = p.get("names") === "en" ? "en" : "local";
     return true;
   }
   function syncInputs() {
     hIn.value = state.h; hR.value = toSlider(state.h);
     tIn.value = state.t;
+    markNameChips();
     $("refr").value = String(state.k); if (!$("refr").value) { state.k = 0.13; $("refr").value = "0.13"; }
     $("rmax").value = String(state.rmax); if (!$("rmax").value) { state.rmax = 100000; $("rmax").value = "100000"; }
   }
   try {
     const s = JSON.parse(localStorage.getItem("horizon-v3") || "null");
     if (s && validPlace(s.lat) && isFinite(s.h)) Object.assign(state, s);
+    state.names = state.names === "en" ? "en" : "local";
   } catch {}
   readHashState();
   syncInputs();
