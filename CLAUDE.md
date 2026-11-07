@@ -21,11 +21,11 @@ On this machine ports 8000 and 8080 are already taken by other local services (1
 ## Tests and benchmark
 
 ```
-node --test                 # all tests (test/*.test.js), ~40 s; Node 24, built-ins only
+node --test                 # all tests (test/*.test.js), ~2.5 s; Node 24, built-ins only
 node bench/rays.js          # ray-count benchmark, ~35 min, prints a Markdown table
 ```
 
-`node --test test/` does not work on Node 24 (a directory is not a glob); use plain `node --test`. `test/harness.js` runs `worker.js` in `node:vm` with a `postMessage` stub (`loadWorker(path?)`, `flatTile(h)`); `WORKER_SRC=<file>` makes `test/viewshed.test.js` load a mutated copy for red checks. Each 20-tile load costs ~12 s because every `tile` message runs `shade()`, and code in `node:vm` runs ~10× slower than in a browser (global lookups go through the context; measured 2026-11-07: 3410 ms vs 301 ms for one 4096-ray 100 km view), so `bench/rays.js` times are only good as ratios. `bench/png.js` decodes the DEM PNGs with `node:zlib`.
+`node --test test/` does not work on Node 24 (a directory is not a glob); use plain `node --test`. `test/harness.js` wraps `worker.js` in `new Function` with a `postMessage` stub and a local `onmessage` (`loadWorker(path?)`, `flatTile(h)`); `WORKER_SRC=<file>` makes the tests load a mutated copy for red checks. Do not go back to `node:vm`: global lookups through the vm context made the worker ~10× slower (measured 2026-11-07: 3410 ms vs 301 ms for one 4096-ray 100 km view; suite 37 s vs 2.5 s). `bench/png.js` decodes the DEM PNGs with `node:zlib`.
 
 ## Architecture
 
@@ -34,8 +34,8 @@ node bench/rays.js          # ray-count benchmark, ~35 min, prints a Markdown ta
 **Worker** (`worker.js`, loaded with `new Worker("worker.js")`): shares no scope with the main script. It keeps the DEM tiles in memory and handles four messages:
 - `init` → region (`la0, lo0, nla, nlo`) and Earth radius `R`, sent by the main script from `REG`/`R` right after creating the worker; must come before any `tile`.
 - `tile` → stores an `Int16Array` heightmap, replies `shade` (hillshade bitmap for that 1°×1° tile, Mercator-resampled).
-- `view` → the viewshed. Casts `rays` (default 4096) azimuth rays at 60 m steps out to `rmax`; a sample is visible if its elevation angle `(z - d²/(2·Re) - zo)/d` is ≥ the running max (`Re = R/(1-k)` folds refraction coefficient `k` into Earth radius). Returns visibility mask raster (in unit-Mercator bbox), skyline per azimuth, intermediate ridge crests (`crA/crD/crN`) for the panorama, visible area, farthest point.
-- `query` → single line-of-sight check for map hover (30 m steps), returns metres hidden below sightline.
+- `view` → the viewshed. Casts `rays` (default 4096; the page sends `raysFor(rmax)`: 8192 up to 100 km, 16384 beyond, from the 2026-11-07 bench) azimuth rays at 60 m steps out to `rmax`, each along a great circle (exact points every 32 samples, linear in between, <0.12 m error); the mask looks pixels up by great-circle distance and initial bearing; a sample is visible if its elevation angle `(z - d²/(2·Re) - zo)/d` is ≥ the running max (`Re = R/(1-k)` folds refraction coefficient `k` into Earth radius). Returns visibility mask raster (in unit-Mercator bbox), skyline per azimuth, intermediate ridge crests (`crA/crD/crN`) for the panorama, visible area, farthest point.
+- `query` → single line-of-sight check for map hover / touch long-press (30 m steps along the great circle), returns great-circle distance `D` and metres hidden below sightline.
 
 Results go back as transferable buffers. `viewId`/`qid` counters discard stale replies.
 
