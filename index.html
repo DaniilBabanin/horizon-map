@@ -1,6 +1,4 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
-<title>Horizon Finder</title>
-<meta name="claude:viewport-fit-sides" content="cover">
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Horizon Finder</title><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -282,11 +280,11 @@ canvas { display: block; width: 100%; height: 100%; }
       borderPath = toPath2D(topojson.mesh(world, world.objects.countries, (a, b) => a !== b));
       waterPath = toPath2D(fixWinding(topojson.feature(lakes, lakes.objects["map.geo"])));
       draw();
-    }).catch(() => {});
+    }).catch((e) => { console.error(e); setStatus("Map outlines failed to load. Reload the page to try again.", true); });
   fetch("data/cities.json").then(r => r.json()).then(rows => {
     cities = rows.map(([n, c, la, lo, p]) => { const [x, y] = proj([lo, la]); return { n, c, la, lo, p, x, y, key: n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase() }; });
     draw(); updateFarText();
-  }).catch(() => {});
+  }).catch((e) => { console.error(e); setStatus("Town names failed to load. Reload the page to try again.", true); });
   function nearestTown(lat, lon, maxKm = 12) {
     let best = null, bd = maxKm * 1000;
     const cosl = Math.cos(lat * RAD);
@@ -373,7 +371,7 @@ canvas { display: block; width: 100%; height: 100%; }
   let restStarted = false;
   async function loadRest() {
     if (restStarted) return; restStarted = true;
-    for (const [la, lo] of tilesFor(state.lat, state.lon, 1e7)) { try { await loadTile(la, lo); } catch (e) {} }
+    for (const [la, lo] of tilesFor(state.lat, state.lon, 1e7)) { try { await loadTile(la, lo); } catch (e) { console.error("hillshade tile", la, lo, e); } }
   }
 
   let computeTimer = 0;
@@ -466,7 +464,6 @@ canvas { display: block; width: 100%; height: 100%; }
     ctx.strokeStyle = colors.muted; ctx.lineWidth = 0.8 / k; ctx.stroke(toPath2D(circleGeo(state.rmax)));
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (view && view.lat === undefined) {}
     if (view) {
       ctx.fillStyle = colors.horizon;
       const sz = 1.8;
@@ -619,7 +616,9 @@ canvas { display: block; width: 100%; height: 100%; }
     $("coords").textContent = nf(Math.abs(state.lat), 4) + "° " + (state.lat >= 0 ? "N" : "S") + ", " + nf(Math.abs(state.lon), 4) + "° " + (state.lon >= 0 ? "E" : "W");
     for (const b of document.querySelectorAll("#presets .chip")) b.setAttribute("aria-pressed", String(+b.dataset.h === state.h));
     $("flat").textContent = len(flatHorizon(state.h));
-    try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch (e) {}
+    try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch {}
+    const params = new URLSearchParams({ lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax });
+    history.replaceState(null, "", "#" + params);
     if (refit) fit();
     draw(); compute();
   }
@@ -711,16 +710,31 @@ canvas { display: block; width: 100%; height: 100%; }
   q.addEventListener("blur", () => { res.hidden = true; });
 
   // ---------- start ----------
+  function readHashState() {
+    const p = new URLSearchParams(location.hash.slice(1));
+    const lat = parseFloat(p.get("lat")), lon = parseFloat(p.get("lon")), h = parseFloat(p.get("h"));
+    if (!isFinite(lat) || !isFinite(lon) || !isFinite(h) || h <= 0 || !inRegion(lat, lon)) return false;
+    state.lat = lat; state.lon = lon; state.h = Math.min(12000, h);
+    const k = parseFloat(p.get("k")), rmax = parseFloat(p.get("rmax"));
+    if (isFinite(k)) state.k = k;
+    if (isFinite(rmax)) state.rmax = rmax;
+    return true;
+  }
+  function syncInputs() {
+    hIn.value = state.h; hR.value = toSlider(state.h);
+    $("refr").value = String(state.k); if (!$("refr").value) { state.k = 0.13; $("refr").value = "0.13"; }
+    $("rmax").value = String(state.rmax); if (!$("rmax").value) { state.rmax = 100000; $("rmax").value = "100000"; }
+  }
   try {
     const s = JSON.parse(localStorage.getItem("horizon-v3") || "null");
     if (s && inRegion(s.lat, s.lon) && isFinite(s.h)) Object.assign(state, s);
-  } catch (e) {}
-  hIn.value = state.h; hR.value = toSlider(state.h);
-  $("refr").value = String(state.k); if (!$("refr").value) { state.k = 0.13; $("refr").value = "0.13"; }
-  $("rmax").value = String(state.rmax); if (!$("rmax").value) { state.rmax = 100000; $("rmax").value = "100000"; }
+  } catch {}
+  readHashState();
+  syncInputs();
   readColors();
   resize(); resizePano();
   changed();
+  addEventListener("hashchange", () => { if (readHashState()) { syncInputs(); changed(true); } });
   requestAnimationFrame(() => fit(false));
 })();
 </script>
