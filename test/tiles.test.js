@@ -1,5 +1,5 @@
 // Checks of the Terrarium tile protocol in worker.js: zoom selection, the disc's tile block,
-// interpolation across tile seams and continuity across the dateline.
+// tile-store eviction, interpolation across tile seams and continuity across the dateline.
 // Every expected tile coordinate is derived here from the Mercator formulas.
 "use strict";
 
@@ -117,6 +117,41 @@ test("tile seam: bilinear interpolation crosses tile edges", () => {
     Math.abs(reply.z - 2 * seamPixel) <= 0.01,
     `seam elevation ${reply.z} is not within 0.01 m of ${2 * seamPixel}`,
   );
+});
+
+test("prepare evicts tiles outside the disc when the store passes its limit", () => {
+  const worker = startWorker();
+  const firstPlace = { lat: 0, lon: 0, rmax: 150000 };
+  const first = loadTerrain(worker, firstPlace);
+  const firstNeed = worker.messages.filter((message) => message.type === "need").pop();
+  assert.ok(firstNeed, "no need message after the first load");
+  assert.deepEqual(firstNeed.evicted, []);
+  assert.equal(firstNeed.total, first.keys.length);
+
+  // A second continent. 256 held tiles are below max(600, 2 * 441) = 882, so this
+  // prepare keeps them; the load then takes the store to 697 tiles.
+  const secondPlace = { lat: 40, lon: -100, rmax: 150000 };
+  const second = loadTerrain(worker, secondPlace);
+  const secondNeed = worker.messages.filter((message) => message.type === "need").pop();
+  assert.ok(secondNeed, "no need message after the second load");
+  assert.deepEqual(secondNeed.evicted, []);
+
+  const held = new Set([...first.keys, ...second.keys]);
+  assert.ok(held.size > 600, `store of ${held.size} tiles is not over the 600-tile floor`);
+
+  // A one-tile disc elsewhere: store 697 > max(600, 2 * 1), so every held tile lies
+  // outside it and must be reported for the page to drop.
+  const smallPlace = { lat: 60, lon: 60, rmax: 1000 };
+  const small = prepare(worker, smallPlace);
+  assert.equal(small.total, 1);
+  assert.ok(Array.isArray(small.evicted), "need.evicted is not an array");
+  assert.deepEqual([...small.evicted].sort(), [...held].sort());
+
+  // Back at the first place the evicted keys are missing again, so they are requested.
+  const later = prepare(worker, firstPlace);
+  for (const key of first.keys) {
+    assert.ok(later.keys.includes(key), `first-place key ${key} was not requested again`);
+  }
 });
 
 test("dateline: the disc wraps tile x and stays edge-free", () => {

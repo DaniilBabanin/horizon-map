@@ -79,7 +79,6 @@ input[type="range"] { width: 100%; accent-color: var(--horizon); }
 .results button { display: flex; justify-content: space-between; width: 100%; text-align: left; border: 0; background: transparent; color: var(--ink); font: 14px var(--f-body); padding: 8px 10px; cursor: pointer; gap: 8px; }
 .results button:hover, .results button.active { background: var(--vis); }
 .results small { color: var(--muted); font-family: var(--f-mono); }
-.results .out { opacity: 0.55; }
 .readout { border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding-block: 14px; display: flex; flex-direction: column; gap: 12px; }
 .big { font-family: var(--f-display); font-weight: 600; font-size: 42px; line-height: 1; color: var(--horizon); font-variant-numeric: tabular-nums; }
 .big .u { font-size: 20px; margin-left: 4px; color: var(--muted); }
@@ -94,7 +93,6 @@ dd { margin: 0; font-family: var(--f-mono); font-variant-numeric: tabular-nums; 
 .sw.vis { background: var(--vis); }
 .sw.sky { height: 0; border-top: 3px dotted var(--horizon); }
 .sw.ring { height: 0; border-top: 1.5px dashed var(--ring); }
-.sw.reg { height: 0; border-top: 1.5px dotted var(--muted); }
 .note { color: var(--muted); font-size: 12.5px; max-width: 60ch; }
 .note p { margin: 0 0 8px; }
 select { font: 14px var(--f-body); color: var(--ink); background: var(--field); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 8px; max-width: 100%; }
@@ -114,6 +112,7 @@ canvas { display: block; width: 100%; height: 100%; }
 .scale { position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 12px; font: 11px var(--f-mono); color: var(--ink); background: var(--halo); padding: 2px 5px; border-radius: 4px; }
 .scale .bar { height: 6px; border: 1.5px solid var(--ink); border-top: 0; margin-top: 2px; }
 .attrib { position: absolute; right: max(10px, env(safe-area-inset-right, 0px)); bottom: 8px; font-size: 10.5px; color: var(--muted); background: var(--halo); padding: 2px 6px; border-radius: 4px; }
+.attrib a { color: inherit; }
 @media (max-width: 760px) {
   .app { grid-template-columns: 1fr; height: auto; }
   .right { order: -1; grid-template-rows: 55vh 150px; }
@@ -190,7 +189,6 @@ canvas { display: block; width: 100%; height: 100%; }
       <span class="sw vis"></span><span id="legendVis">Ground you can see</span>
       <span class="sw sky"></span><span>Skyline: the last ridge in each direction</span>
       <span class="sw ring"></span><span>Where the horizon would be on flat ground</span>
-      <span class="sw reg"></span><span>Edge of the terrain data</span>
     </div>
 
     <div class="group">
@@ -214,7 +212,7 @@ canvas { display: block; width: 100%; height: 100%; }
 
     <div class="note">
       <p>Hover the map to check any spot (long-press on a touch screen): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama to find which ridge forms the skyline in that direction.</p>
-      <p>Terrain is SRTM 3″ (about 90 m) covering 48–52° N, 6–11° E: Rhine-Main, Rhineland-Palatinate, Saarland, Hesse, northern Baden-Württemberg and southern NRW. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
+      <p>Terrain is AWS Terrain Tiles (Mapzen Terrarium: SRTM and other sources, about 100 m per pixel), worldwide between 85° S and 85° N. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
     </div>
   </aside>
 
@@ -225,7 +223,7 @@ canvas { display: block; width: 100%; height: 100%; }
       <div class="mapbar"><button id="fit" type="button">Fit view</button></div>
       <div class="tip" id="tip" hidden></div>
       <div class="scale"><span id="scaleTxt">10 km</span><div class="bar" id="scaleBar" style="width:100px"></div></div>
-      <div class="attrib">SRTM (NASA) · Natural Earth · GeoNames</div>
+      <div class="attrib">Terrain: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">Mapzen Terrain Tiles</a> (AWS) · Natural Earth · GeoNames</div>
     </div>
     <div class="panowrap" id="panowrap">
       <canvas id="pano" aria-label="360 degree skyline panorama"></canvas>
@@ -241,7 +239,11 @@ canvas { display: block; width: 100%; height: 100%; }
 (() => {
   const R = 6371008.8, RAD = Math.PI / 180;
   const W = 1024;
-  const REG = { la0: 48, la1: 52, lo0: 6, lo1: 11 };
+  // Web Mercator tiles cannot represent the poles; the page accepts places up to this latitude.
+  const MAX_LAT = 85;
+  const TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/";
+  const TILE_SIDE = 256;
+  const MAX_TILE_FETCHES = 8;
   const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
   const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000 };
 
@@ -250,7 +252,7 @@ canvas { display: block; width: 100%; height: 100%; }
   const len = (m) => m < 1000 ? nf(m, 0) + " m" : km(m) + " km";
   const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
   const compass = (deg) => COMPASS[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
-  const inRegion = (lat, lon) => lat >= REG.la0 && lat < REG.la1 && lon >= REG.lo0 && lon < REG.lo1;
+  const validPlace = (lat) => Math.abs(lat) <= MAX_LAT;
   const flatHorizon = (h) => { const re = R / (1 - state.k); return re * Math.acos(re / (re + h)); };
 
   const $ = (id) => document.getElementById(id);
@@ -290,6 +292,7 @@ canvas { display: block; width: 100%; height: 100%; }
     return fc;
   }
   const toPath2D = (geo) => { const p = new Path2D(); d3.geoPath(proj, p)(geo); return p; };
+  const toCity = ([n, c, la, lo, p]) => { const [x, y] = proj([lo, la]); return { n, c, la, lo, p, x, y, key: n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase() }; };
   Promise.all([fetch("data/world.json").then(r => r.json()), fetch("data/lakes.json").then(r => r.json())])
     .then(([world, lakes]) => {
       landPath = toPath2D(fixWinding(topojson.feature(world, world.objects.land)));
@@ -298,8 +301,8 @@ canvas { display: block; width: 100%; height: 100%; }
       draw();
     }).catch((e) => { console.error(e); dataError = "Map outlines failed to load. Reload the page to try again."; setStatus(dataError, true); });
   fetch("data/cities.json").then(r => r.json()).then(rows => {
-    cities = rows.map(([n, c, la, lo, p]) => { const [x, y] = proj([lo, la]); return { n, c, la, lo, p, x, y, key: n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase() }; });
-    draw(); updateFarText();
+    cities = rows.map(toCity);
+    draw(); updateFarText(); runSearch();
   }).catch((e) => { console.error(e); dataError = "Town names failed to load. Reload the page to try again."; setStatus(dataError, true); });
   function nearestTown(lat, lon, maxKm = 12) {
     let best = null, bd = maxKm * 1000;
@@ -314,50 +317,81 @@ canvas { display: block; width: 100%; height: 100%; }
 
   // ---------- terrain worker ----------
   const worker = new Worker("worker.js");
-  worker.postMessage({ type: "init", la0: REG.la0, lo0: REG.lo0, nla: REG.la1 - REG.la0, nlo: REG.lo1 - REG.lo0, R });
-  const shades = [];
-  const tileState = new Map();
-  const tileName = (la, lo) => "dem/N" + la + "E" + String(lo).padStart(3, "0") + ".png";
-  async function loadTile(la, lo) {
-    const idx = (la - REG.la0) * (REG.lo1 - REG.lo0) + (lo - REG.lo0);
-    if (tileState.has(idx)) return tileState.get(idx);
-    const p = (async () => {
-      const res = await fetch(tileName(la, lo));
-      if (!res.ok) throw new Error("tile " + res.status);
-      // heights are packed losslessly as (metres + 1000) in the red/green bytes of a PNG
-      const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
-      const cv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height;
-      const c2 = cv.getContext("2d", { willReadFrequently: true, colorSpace: "srgb" });
-      c2.drawImage(bmp, 0, 0); bmp.close();
-      const px = c2.getImageData(0, 0, cv.width, cv.height).data;
-      const d = new Int16Array(1201 * 1201);
-      for (let i = 0; i < d.length; i++) d[i] = (px[i * 4] << 8 | px[i * 4 + 1]) - 1000;
-      worker.postMessage({ type: "tile", idx, data: d }, [d.buffer]);
-      return idx;
-    })();
-    tileState.set(idx, p);
-    return p;
-  }
-  function tilesFor(lat, lon, rmax) {
-    const out = [], cosl = Math.cos(lat * RAD);
-    for (let la = REG.la0; la < REG.la1; la++) for (let lo = REG.lo0; lo < REG.lo1; lo++) {
-      const cla = Math.max(la, Math.min(la + 1, lat)), clo = Math.max(lo, Math.min(lo + 1, lon));
-      const d = Math.hypot((cla - lat) * RAD * R, (clo - lon) * RAD * R * cosl);
-      if (d <= rmax + 2000) out.push([d, la, lo]);
+  worker.postMessage({ type: "init", R });
+  const shadeImages = new Map();
+  // Keys evicted while their bitmap was still decoding; the late shade is not stored.
+  const evictedShadeKeys = new Set();
+
+  // One Terrarium tile as Int16 metres: R*256 + G + B/256 - 32768, rounded. A black pixel
+  // decodes to -32768, the worker's "no data" marker.
+  async function fetchTile(key) {
+    const res = await fetch(TILE_URL + key + ".png");
+    if (!res.ok) throw new Error("tile " + res.status + " " + key);
+    // Keep the raw bytes for the height formula, as with the old DEM PNGs.
+    const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+    const cv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height;
+    const c2 = cv.getContext("2d", { willReadFrequently: true, colorSpace: "srgb" });
+    c2.drawImage(bmp, 0, 0); bmp.close();
+    const px = c2.getImageData(0, 0, cv.width, cv.height).data;
+    const data = new Int16Array(cv.width * cv.height);
+    for (let i = 0; i < data.length; i++) {
+      const h = Math.round(px[i * 4] * 256 + px[i * 4 + 1] + px[i * 4 + 2] / 256 - 32768);
+      data[i] = Math.max(-32768, Math.min(32767, h));
     }
-    return out.sort((a, b) => a[0] - b[0]).map(([, la, lo]) => [la, lo]);
+    return data;
+  }
+
+  // Fetches `keys` with at most MAX_TILE_FETCHES requests in flight, retries a failed tile
+  // once, and posts each decoded tile to the worker. A stale load stops at its next key.
+  async function loadTiles(keys, id) {
+    let next = 0, done = 0, failed = 0;
+    setStatus("Loading terrain 0 of " + keys.length + "…");
+    async function loadNext() {
+      while (next < keys.length) {
+        if (id !== viewId) return;
+        const key = keys[next++];
+        let data = null, lastError = null;
+        for (let attempt = 0; attempt < 2 && !data; attempt++) {
+          try { data = await fetchTile(key); } catch (e) { lastError = e; }
+        }
+        if (id !== viewId) return;
+        if (data) worker.postMessage({ type: "tile", key, data }, [data.buffer]);
+        else { console.error("terrain tile " + key + " failed", lastError); failed++; }
+        done++;
+        if (id === viewId) setStatus("Loading terrain " + done + " of " + keys.length + "…");
+      }
+    }
+    const loaders = [];
+    for (let i = 0; i < Math.min(MAX_TILE_FETCHES, keys.length); i++) loaders.push(loadNext());
+    await Promise.all(loaders);
+    return { failed, total: keys.length };
   }
 
   let firstFitDone = false;
   let view = null, viewId = 0, maskCanvas = null, tinted = null, hoverPt = null;
+  let pendingPrepare = null;
   const pending = new Map(); let qid = 0;
   worker.onmessage = async (e) => {
     const m = e.data;
     if (m.type === "shade") {
-      const img = await createImageBitmap(new ImageData(m.data, m.W, m.H));
-      const [x0, y0] = proj([m.lo, m.la + 1]), [x1, y1] = proj([m.lo + 1, m.la]);
-      shades.push({ img, x0, y0, x1, y1 });
+      const img = await createImageBitmap(new ImageData(m.data, TILE_SIDE, TILE_SIDE));
+      if (evictedShadeKeys.has(m.key)) { evictedShadeKeys.delete(m.key); return; }
+      shadeImages.set(m.key, { img, z: m.z, x: m.x, y: m.y });
       draw();
+    } else if (m.type === "need") {
+      for (const key of m.evicted) { shadeImages.delete(key); evictedShadeKeys.add(key); }
+      if (!pendingPrepare || m.id !== pendingPrepare.id || m.id !== viewId) return;
+      for (const key of m.keys) evictedShadeKeys.delete(key);
+      const request = pendingPrepare;
+      const { failed, total } = await loadTiles(m.keys, m.id);
+      if (m.id !== viewId) return;
+      if (total > 0 && failed === total) {
+        setStatus("Terrain tiles failed to load. Check the connection and reload.", true);
+        return;
+      }
+      const rays = raysFor(request.rmax);
+      setStatus("Tracing " + nf(rays) + " sightlines…");
+      worker.postMessage({ type: "view", id: request.id, lat: request.lat, lon: request.lon, h: state.h, k: state.k, rmax: request.rmax, rays, t: state.t });
     } else if (m.type === "view") {
       if (m.id !== viewId) return;
       if (m.error) { setStatus("No terrain data at this spot.", true); return; }
@@ -370,10 +404,9 @@ canvas { display: block; width: 100%; height: 100%; }
       maskCanvas.getContext("2d").putImageData(id, 0, 0);
       tintMask();
       updateReadouts();
-      setStatus([m.edge ? "Some directions reach the edge of the terrain data; the view there is cut off." : "", dataError].filter(Boolean).join(" "), !!dataError);
+      setStatus([m.edge ? "Some directions reach the edge of the loaded terrain; the view there is cut off." : "", dataError].filter(Boolean).join(" "), !!dataError);
       if (!firstFitDone) { firstFitDone = true; fit(); }
       draw(); drawPano();
-      loadRest();
     } else if (m.type === "query") {
       const cb = pending.get(m.qid); pending.delete(m.qid); if (cb) cb(m);
     }
@@ -384,11 +417,6 @@ canvas { display: block; width: 100%; height: 100%; }
     const t = tinted.getContext("2d");
     t.drawImage(maskCanvas, 0, 0); t.globalCompositeOperation = "source-in"; t.fillStyle = colors.vis; t.fillRect(0, 0, tinted.width, tinted.height);
   }
-  let restStarted = false;
-  async function loadRest() {
-    if (restStarted) return; restStarted = true;
-    for (const [la, lo] of tilesFor(state.lat, state.lon, 1e7)) { try { await loadTile(la, lo); } catch (e) { console.error("hillshade tile", la, lo, e); } }
-  }
 
   // 2026-11-07 bench (Großer Feldberg, 65536-ray reference): 8192 rays leave 3.4 % of mask pixels
   // wrong beyond 50 km (0.46 s at 100 km), 16384 leave 1.7–1.9 % (1.6 s at 200 km), 4096 leave 6.3–6.7 %.
@@ -397,19 +425,11 @@ canvas { display: block; width: 100%; height: 100%; }
   let computeTimer = 0;
   function compute() {
     clearTimeout(computeTimer);
-    computeTimer = setTimeout(async () => {
+    computeTimer = setTimeout(() => {
       const id = ++viewId;
-      if (!inRegion(state.lat, state.lon)) { setStatus("This spot is outside the terrain data (48–52° N, 6–11° E).", true); return; }
-      const need = tilesFor(state.lat, state.lon, state.rmax);
-      let done = 0;
-      setStatus("Loading terrain 0 of " + need.length + "…");
-      try {
-        await Promise.all(need.map(([la, lo]) => loadTile(la, lo).then(() => { done++; if (id === viewId) setStatus("Loading terrain " + done + " of " + need.length + "…"); })));
-      } catch (e) { setStatus("Terrain data failed to load. Reload the page to try again.", true); return; }
-      if (id !== viewId) return;
-      const rays = raysFor(state.rmax);
-      setStatus("Tracing " + nf(rays) + " sightlines…");
-      worker.postMessage({ type: "view", id, lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, rays, t: state.t });
+      pendingPrepare = { id, lat: state.lat, lon: state.lon, rmax: state.rmax };
+      setStatus("Loading terrain…");
+      worker.postMessage({ type: "prepare", id, lat: state.lat, lon: state.lon, rmax: state.rmax });
     }, 120);
   }
 
@@ -468,12 +488,12 @@ canvas { display: block; width: 100%; height: 100%; }
     ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * T.x, dpr * T.y);
     if (landPath) { ctx.fillStyle = colors.land; ctx.fill(landPath); }
     ctx.imageSmoothingEnabled = true;
-    for (const s of shades) ctx.drawImage(s.img, s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
+    for (const s of shadeImages.values()) {
+      const side = W / 2 ** s.z;
+      ctx.drawImage(s.img, s.x * side, s.y * side, side, side);
+    }
     if (waterPath) { ctx.fillStyle = colors.water; ctx.fill(waterPath); }
     if (borderPath) { ctx.strokeStyle = colors.border; ctx.lineWidth = 1 / k; ctx.setLineDash([4 / k, 3 / k]); ctx.stroke(borderPath); ctx.setLineDash([]); }
-    // terrain data edge
-    { const [a, b] = proj([REG.lo0, REG.la1]), [c, d] = proj([REG.lo1, REG.la0]);
-      ctx.strokeStyle = colors.muted; ctx.lineWidth = 1.2 / k; ctx.setLineDash([1.5 / k, 3 / k]); ctx.strokeRect(a, b, c - a, d - b); ctx.setLineDash([]); }
     if (view && tinted) {
       const [x0, y0, x1, y1] = view.bbox;
       ctx.imageSmoothingEnabled = k * (x1 - x0) / tinted.width < 3;
@@ -681,7 +701,7 @@ canvas { display: block; width: 100%; height: 100%; }
   $("fit").addEventListener("click", () => fit());
 
   function placeAt(lat, lon) {
-    if (!inRegion(lat, lon)) { showHint("Terrain data covers 48–52° N, 6–11° E (the dotted box). Pick a spot inside it."); return false; }
+    if (!validPlace(lat)) { showHint("Pick a spot between 85° S and 85° N."); return false; }
     showHint(""); state.lat = lat; state.lon = lon; changed(); return true;
   }
 
@@ -759,9 +779,9 @@ canvas { display: block; width: 100%; height: 100%; }
     res.innerHTML = "";
     matches.forEach((c, i) => {
       const b = document.createElement("button");
-      b.type = "button"; b.className = (i === active ? "active " : "") + (inRegion(c.la, c.lo) ? "" : "out");
+      b.type = "button"; b.className = i === active ? "active" : "";
       const s = document.createElement("span"); s.textContent = c.n + ", " + c.c;
-      const sm = document.createElement("small"); sm.textContent = inRegion(c.la, c.lo) ? nf(c.p) + " pop." : "no terrain data";
+      const sm = document.createElement("small"); sm.textContent = nf(c.p) + " pop.";
       b.append(s, sm);
       b.addEventListener("mousedown", (ev) => { ev.preventDefault(); choose(c); });
       res.append(b);
@@ -769,14 +789,28 @@ canvas { display: block; width: 100%; height: 100%; }
     res.hidden = !matches.length;
   }
   function choose(c) { res.hidden = true; q.value = c.n + ", " + c.c; if (placeAt(c.la, c.lo)) { firstFitDone = false; fit(); } }
-  q.addEventListener("input", () => {
+  function runSearch() {
     const s = q.value.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
     active = 0;
     if (s.length < 2) { matches = []; renderResults(); return; }
-    const inR = [], outR = [];
-    for (const c of cities) if (c.key.startsWith(s)) { (inRegion(c.la, c.lo) ? inR : outR).push(c); if (inR.length >= 8) break; }
-    matches = inR.concat(outR).slice(0, 8); renderResults();
-  });
+    const source = allCities || cities;
+    const found = [];
+    for (const c of source) if (c.key.startsWith(s)) { found.push(c); if (found.length >= 8) break; }
+    matches = found; renderResults();
+  }
+  // cities.json labels the map and answers early searches; the first keystroke pulls the
+  // full cities1000 list once, and the running search re-runs when it lands.
+  let allCities = null, allCitiesPromise = null;
+  function loadAllCities() {
+    if (!allCitiesPromise) {
+      allCitiesPromise = fetch("data/cities-1000.json")
+        .then((response) => { if (!response.ok) throw new Error("cities1000 " + response.status); return response.json(); })
+        .then((rows) => { allCities = rows.map(toCity); runSearch(); })
+        .catch((error) => { console.error(error); });
+    }
+    return allCitiesPromise;
+  }
+  q.addEventListener("input", () => { runSearch(); loadAllCities(); });
   q.addEventListener("keydown", (e) => {
     if (res.hidden) return;
     if (e.key === "ArrowDown") { active = Math.min(matches.length - 1, active + 1); renderResults(); e.preventDefault(); }
@@ -790,7 +824,7 @@ canvas { display: block; width: 100%; height: 100%; }
   function readHashState() {
     const p = new URLSearchParams(location.hash.slice(1));
     const lat = parseFloat(p.get("lat")), lon = parseFloat(p.get("lon")), h = parseFloat(p.get("h"));
-    if (!isFinite(lat) || !isFinite(lon) || !isFinite(h) || h <= 0 || !inRegion(lat, lon)) return false;
+    if (!isFinite(lat) || !isFinite(lon) || !isFinite(h) || h <= 0 || !validPlace(lat)) return false;
     state.lat = lat; state.lon = lon; state.h = Math.min(12000, h);
     const k = parseFloat(p.get("k")), rmax = parseFloat(p.get("rmax")), t = parseFloat(p.get("t"));
     if (isFinite(k)) state.k = k;
@@ -806,7 +840,7 @@ canvas { display: block; width: 100%; height: 100%; }
   }
   try {
     const s = JSON.parse(localStorage.getItem("horizon-v3") || "null");
-    if (s && inRegion(s.lat, s.lon) && isFinite(s.h)) Object.assign(state, s);
+    if (s && validPlace(s.lat) && isFinite(s.h)) Object.assign(state, s);
   } catch {}
   readHashState();
   syncInputs();
