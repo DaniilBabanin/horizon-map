@@ -223,7 +223,7 @@ canvas { display: block; width: 100%; height: 100%; }
       <div class="mapbar"><button id="fit" type="button">Fit view</button></div>
       <div class="tip" id="tip" hidden></div>
       <div class="scale"><span id="scaleTxt">10 km</span><div class="bar" id="scaleBar" style="width:100px"></div></div>
-      <div class="attrib">Terrain: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">Mapzen Terrain Tiles</a> (AWS) · Natural Earth · GeoNames</div>
+      <div class="attrib">Terrain: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">Mapzen Terrain Tiles</a> (AWS) · Natural Earth · GeoNames · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></div>
     </div>
     <div class="panowrap" id="panowrap">
       <canvas id="pano" aria-label="360 degree skyline panorama"></canvas>
@@ -421,6 +421,87 @@ canvas { display: block; width: 100%; height: 100%; }
     return { failed, total: keys.length };
   }
 
+  // ---------- peak names ----------
+  // OSM peaks are grouped in 2x2 degree cells named by their south-west corner
+  // (scripts/build_peaks.py); index.json lists the cells that exist, so a missing
+  // data/peaks/ directory costs one failed request and leaves the panorama unlabelled.
+  const PEAK_CELL_DEGREES = 2;
+  const PEAK_TOOLTIP_AZIMUTH = 1; // degrees; hover names the nearest peak within this
+  let peakList = [];
+  let peakIndexPromise = null;
+  const peakCellPromises = new Map();
+  function peakCellName(south, west) {
+    const latitude = (south >= 0 ? "N" : "S") + String(Math.abs(south)).padStart(2, "0");
+    const longitude = (west >= 0 ? "E" : "W") + String(Math.abs(west)).padStart(3, "0");
+    return latitude + longitude;
+  }
+  function loadPeakIndex() {
+    if (!peakIndexPromise) {
+      peakIndexPromise = fetch("data/peaks/index.json")
+        .then((response) => {
+          if (!response.ok) throw new Error("peaks index " + response.status);
+          return response.json();
+        })
+        .catch((error) => { console.warn("Peak names unavailable: " + error.message); return []; });
+    }
+    return peakIndexPromise;
+  }
+  function loadPeakCell(name) {
+    if (!peakCellPromises.has(name)) {
+      peakCellPromises.set(name, fetch("data/peaks/" + name + ".json")
+        .then((response) => {
+          if (!response.ok) throw new Error("peaks cell " + name + " " + response.status);
+          return response.json();
+        })
+        .catch((error) => { console.warn("Peak cell unavailable: " + error.message); return []; }));
+    }
+    return peakCellPromises.get(name);
+  }
+  // Every cell whose 2x2 degree extent overlaps the disc's bounding box. The longitude
+  // half-width is the worker's disc rule, so a disc across the antimeridian still names
+  // the wrapped cells (the south-west corner is wrapped before building the name).
+  function peakCellsTouched(lat, lon, rmax) {
+    const delta = rmax / R, latHalf = delta / RAD;
+    const latMin = Math.max(-90, lat - latHalf), latMax = Math.min(90, lat + latHalf);
+    const lonHalf = Math.abs(lat) + latHalf >= 90
+      ? 180
+      : Math.min(180, Math.asin(Math.min(1, Math.sin(delta) / Math.cos(lat * RAD))) / RAD);
+    const firstSouth = Math.floor(latMin / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const lastSouth = Math.floor(latMax / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const firstWest = Math.floor((lon - lonHalf) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const lastWest = Math.floor((lon + lonHalf) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const names = [];
+    for (let south = firstSouth; south <= lastSouth; south += PEAK_CELL_DEGREES) {
+      for (let west = firstWest; west <= lastWest; west += PEAK_CELL_DEGREES) {
+        names.push(peakCellName(south, wrapLon(west)));
+      }
+    }
+    return [...new Set(names)];
+  }
+  async function requestPeaks(v) {
+    const index = await loadPeakIndex();
+    if (v.id !== viewId || !index.length) return;
+    const listed = new Set(index);
+    const cells = peakCellsTouched(v.lat, v.lon, v.rmax).filter((name) => listed.has(name));
+    if (!cells.length) return;
+    const cellRows = await Promise.all(cells.map(loadPeakCell));
+    if (v.id !== viewId) return;
+    const rows = [];
+    for (const cell of cellRows) for (const row of cell) rows.push(row);
+    worker.postMessage({ type: "peaks", id: v.id, rows });
+  }
+  function peakLabelText(peak) {
+    return peak.ele == null ? peak.name : peak.name + " " + nf(peak.ele, 0) + " m";
+  }
+  function nearestPeakLabel(azimuthDegrees) {
+    let best = null, bestDifference = PEAK_TOOLTIP_AZIMUTH;
+    for (const peak of peakList) {
+      const difference = Math.abs(((peak.az / RAD - azimuthDegrees + 540) % 360) - 180);
+      if (difference <= bestDifference) { bestDifference = difference; best = peak; }
+    }
+    return best;
+  }
+
   let firstFitDone = false;
   let view = null, viewId = 0, maskCanvas = null, tinted = null, hoverPt = null;
   let pendingPrepare = null;
@@ -450,6 +531,7 @@ canvas { display: block; width: 100%; height: 100%; }
       if (m.id !== viewId) return;
       if (m.error) { setStatus("No terrain data at this spot.", true); return; }
       view = m;
+      peakList = [];
       view.sx = new Float32Array(m.A); view.sy = new Float32Array(m.A);
       for (let a = 0; a < m.A; a++) { const [x, y] = projNear([m.skyLon[a], m.skyLat[a]]); view.sx[a] = x; view.sy[a] = y; }
       maskCanvas = document.createElement("canvas"); maskCanvas.width = m.pw; maskCanvas.height = m.ph;
@@ -460,6 +542,14 @@ canvas { display: block; width: 100%; height: 100%; }
       updateReadouts();
       setStatus([m.edge ? "Some directions reach the edge of the loaded terrain; the view there is cut off." : "", dataError].filter(Boolean).join(" "), !!dataError);
       if (!firstFitDone) { firstFitDone = true; fit(); }
+      requestPeaks(m);
+      draw(); drawPano();
+    } else if (m.type === "peaks") {
+      if (m.id !== viewId) return;
+      peakList = m.list.map((peak) => {
+        const [x, y] = projNear([peak.lon, peak.lat]);
+        return { ...peak, x, y };
+      });
       draw(); drawPano();
     } else if (m.type === "query") {
       const cb = pending.get(m.qid); pending.delete(m.qid); if (cb) cb(m);
@@ -614,6 +704,7 @@ canvas { display: block; width: 100%; height: 100%; }
       }
     }
     drawCities(k, copies);
+    drawPeaks(k, copies);
     marker(observerX * k + T.x, observerY * k + T.y, colors.horizon, 6);
     if (hoverPt) { const [hx, hy] = projNear(hoverPt); marker(hx * k + T.x, hy * k + T.y, colors.ink, 4); }
     drawScale(k);
@@ -652,6 +743,26 @@ canvas { display: block; width: 100%; height: 100%; }
       }
     }
   }
+  // Peaks that got a panorama tag: a small triangle, no text; the panorama carries the names.
+  // Only tagged peaks, not every visible one: a 100 km view can see 150+ named hills.
+  function drawPeaks(k, copies) {
+    if (!peakList.length) return;
+    const halfWidth = 3.5, tip = 4, base = 3;
+    ctx.lineJoin = "round";
+    for (const { peak } of layoutPeakLabels().placed) {
+      for (const offset of copies) {
+        const x = (peak.x + offset) * k + T.x, y = peak.y * k + T.y;
+        if (x < -halfWidth || y < -tip || x > cw + halfWidth || y > ch + base) continue;
+        ctx.beginPath();
+        ctx.moveTo(x, y - tip);
+        ctx.lineTo(x + halfWidth, y + base);
+        ctx.lineTo(x - halfWidth, y + base);
+        ctx.closePath();
+        ctx.strokeStyle = colors.halo; ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = colors.ink; ctx.fill();
+      }
+    }
+  }
   function drawScale(k) {
     const mPerPx = 2 * Math.PI * R * Math.cos(state.lat * RAD) / (W * k);
     const target = mPerPx * 110, p = Math.pow(10, Math.floor(Math.log10(target)));
@@ -662,17 +773,84 @@ canvas { display: block; width: 100%; height: 100%; }
 
   // ---------- panorama ----------
   let pw = 0, ph = 0, pdpr = 1, panoScale = null;
+  const PANO_TOP = 26, PANO_BOT = 22, PANO_LEFT = 40, PANO_RIGHT = 8;
+  // Tags live in the sky above the plot: 13 px high with a 3 px row gap. `top` grows by
+  // whole rows only while there are labels, so an unlabelled panorama keeps its height.
+  const TAG_HEIGHT = 13, TAG_ROW_HEIGHT = 16, TAG_PAD = 5, TAG_GAP = 3;
   function resizePano() {
     pdpr = window.devicePixelRatio || 1; pw = pwrap.clientWidth; ph = pwrap.clientHeight;
-    pano.width = Math.round(pw * pdpr); pano.height = Math.round(ph * pdpr); drawPano();
+    pano.width = Math.round(pw * pdpr); pano.height = Math.round(ph * pdpr); drawPano(); draw();
   }
   new ResizeObserver(resizePano).observe(pwrap);
   const deg = (t) => Math.atan(t) / RAD;
+
+  // Greedy two-row placement, priority skyline peaks first, then higher elevations, then
+  // nearer peaks. A tag that overlaps both rows is dropped; tags never overlap each other.
+  // The result depends only on the peak list and the canvas width, so it is cached across
+  // the hover redraws instead of measuring every name on each pointer move.
+  let peakLabels = { placed: [], rows: 0 };
+  let peakLabelsFor = null, peakLabelsWidth = 0;
+  function layoutPeakLabels() {
+    if (!view || !peakList.length || !pw) return { placed: [], rows: 0 };
+    if (peakLabelsFor === peakList && peakLabelsWidth === pw) return peakLabels;
+    const placed = [];
+    const rowIntervals = [[], []];
+    let rows = 0;
+    const width = pw - PANO_LEFT - PANO_RIGHT;
+    pctx.font = "600 11px 'IBM Plex Sans', system-ui, sans-serif";
+    const ordered = peakList.slice().sort((a, b) => {
+      if (a.sky !== b.sky) return a.sky ? -1 : 1;
+      const ea = a.ele == null ? -Infinity : a.ele, eb = b.ele == null ? -Infinity : b.ele;
+      if (ea !== eb) return eb - ea;
+      return a.d - b.d;
+    });
+    for (const peak of ordered) {
+      const text = peakLabelText(peak);
+      const tagWidth = pctx.measureText(text).width + 2 * TAG_PAD;
+      const x = PANO_LEFT + peak.az / (2 * Math.PI) * width;
+      const tagX0 = Math.max(PANO_LEFT, Math.min(x - tagWidth / 2, PANO_LEFT + width - tagWidth));
+      let row = -1;
+      for (let candidate = 0; candidate < 2; candidate++) {
+        const fits = rowIntervals[candidate].every(([a, b]) => tagX0 >= b + TAG_GAP || tagX0 + tagWidth <= a - TAG_GAP);
+        if (fits) { row = candidate; break; }
+      }
+      if (row < 0) continue;
+      rowIntervals[row].push([tagX0, tagX0 + tagWidth]);
+      placed.push({ peak, text, tagWidth, x, tagX0, row });
+      rows = Math.max(rows, row + 1);
+    }
+    peakLabels = { placed, rows };
+    peakLabelsFor = peakList;
+    peakLabelsWidth = pw;
+    return peakLabels;
+  }
+  // Fonts load after the first paint; tag widths measured with the fallback face would be
+  // wrong, so lay the labels out again once the real face is ready.
+  if (document.fonts) document.fonts.ready.then(() => { peakLabelsFor = null; drawPano(); draw(); });
+  function drawPeakLabels(labels, top, H, Y) {
+    if (!labels.placed.length) return;
+    const g = pctx;
+    g.font = "600 11px 'IBM Plex Sans', system-ui, sans-serif";
+    g.textBaseline = "middle"; g.textAlign = "center"; g.lineJoin = "round";
+    for (const label of labels.placed) {
+      // A visible peak can sit below the exaggerated height range; stop its leader at the
+      // bottom of the plot instead of drawing across the compass strip.
+      const yPeak = Math.min(top + H, Y(deg(label.peak.ang)));
+      const yTag = top - 10 - label.row * TAG_ROW_HEIGHT;
+      const xTag = label.tagX0 + label.tagWidth / 2;
+      g.strokeStyle = colors.halo; g.lineWidth = 3;
+      g.beginPath(); g.moveTo(label.x, yPeak); g.lineTo(xTag, yTag + TAG_HEIGHT / 2); g.stroke();
+      g.strokeStyle = colors.ink; g.lineWidth = 1; g.stroke();
+      g.lineWidth = 3; g.strokeStyle = colors.halo; g.strokeText(label.text, xTag, yTag);
+      g.fillStyle = colors.ink; g.fillText(label.text, xTag, yTag);
+    }
+  }
   function drawPano() {
     if (!pw) return;
     const g = pctx;
     g.setTransform(pdpr, 0, 0, pdpr, 0, 0);
-    const top = 26, bot = 22, left = 40, right = 8, H = ph - top - bot, Wd = pw - left - right;
+    const labels = layoutPeakLabels();
+    const top = PANO_TOP + labels.rows * TAG_ROW_HEIGHT, bot = PANO_BOT, left = PANO_LEFT, right = PANO_RIGHT, H = ph - top - bot, Wd = pw - left - right;
     const grad = g.createLinearGradient(0, top, 0, ph);
     grad.addColorStop(0, colors["sky-top"]); grad.addColorStop(1, colors["sky-low"]);
     g.fillStyle = grad; g.fillRect(0, 0, pw, ph);
@@ -730,6 +908,7 @@ canvas { display: block; width: 100%; height: 100%; }
       g.fillRect(x - 0.5, top + H, 1, 4);
     });
     if (hoverAz != null) { g.fillStyle = colors.ink; g.globalAlpha = 0.6; g.fillRect(left + hoverAz / 360 * Wd - 0.5, top, 1, H); g.globalAlpha = 1; }
+    drawPeakLabels(labels, top, H, Y);
   }
   let hoverAz = null;
   const ptip = $("ptip");
@@ -743,7 +922,8 @@ canvas { display: block; width: 100%; height: 100%; }
     hoverAz = fx * 360;
     hoverPt = [view.skyLon[a], view.skyLat[a]];
     const t = nearestTown(view.skyLat[a], view.skyLon[a], 12);
-    ptip.textContent = nf(hoverAz, 0) + "° " + compass(hoverAz) + " · ridge " + km(view.skyDist[a]) + " km away · " + nf(view.skyZ[a], 0) + " m ASL" + (t ? " · near " + t.n : "");
+    const named = nearestPeakLabel(hoverAz);
+    ptip.textContent = nf(hoverAz, 0) + "° " + compass(hoverAz) + " · ridge " + km(view.skyDist[a]) + " km away · " + nf(view.skyZ[a], 0) + " m ASL" + (named ? " · " + peakLabelText(named) : "") + (t ? " · near " + t.n : "");
     ptip.hidden = false;
     const tw = ptip.offsetWidth;
     ptip.style.left = Math.max(4, Math.min(px + 12, pw - tw - 6)) + "px";

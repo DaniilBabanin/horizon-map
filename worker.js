@@ -8,6 +8,16 @@ const MAX_MERCATOR_LAT = 85.05112878;
 // Selects the zoom at which a Mercator pixel is at most 110 m wide at the observer's
 // latitude: 156543.03 * cos(lat) / 2^z <= 110.
 const MAX_PIXEL_METRES = 110;
+// A named peak counts as visible when the view has a visible sample within this window
+// of its rounded (ray, step). One ray spacing is 2*pi*D/A (at most 77 m at 100 km with
+// the page's 8192 rays) and the step is 60 m, both smaller than a summit footprint at
+// z10 (a few 100 m pixels); +-1 ray and +-2 steps cover the rounding on both axes.
+const PEAK_RAY_WINDOW = 1;
+const PEAK_STEP_WINDOW = 2;
+// The skyline is a per-ray sample too, so allow the same few steps when asking whether
+// the peak itself is the ridge that closes the view.
+const PEAK_SKY_STEPS = 3;
+const PEAK_MIN_DISTANCE = 200;
 
 let R;
 let tiles = new Map();
@@ -307,10 +317,55 @@ function view(m) {
       if (vis[a * N + step]) mask[j * pw + i] = 255;
     }
   }
-  last = { lat, lon, zo, Re, t, mosaic };
-  postMessage({ type: "view", id, A, rmax, z0, zo, area, far, edge, bbox: [x0, y0, x1, y1], pw, ph, mask,
+  last = { lat, lon, zo, Re, t, mosaic, vis, A, N, ds, rmax, skyDist };
+  // skyDist stays out of the transfer list: `last` keeps it for later `peaks` messages,
+  // and transferring a buffer would detach the worker's copy. Structured clone copies it.
+  postMessage({ type: "view", id, lat, lon, A, rmax, z0, zo, area, far, edge, bbox: [x0, y0, x1, y1], pw, ph, mask,
     skyAng, skyDist, skyLat, skyLon, skyZ, crA, crD, crN, CM },
-    [mask.buffer, skyAng.buffer, skyDist.buffer, skyLat.buffer, skyLon.buffer, skyZ.buffer, crA.buffer, crD.buffer, crN.buffer]);
+    [mask.buffer, skyAng.buffer, skyLat.buffer, skyLon.buffer, skyZ.buffer, crA.buffer, crD.buffer, crN.buffer]);
+}
+
+// Names the OSM peaks the last view can see, in reply to a `peaks` message.
+function peaks(m) {
+  if (!last) { postMessage({ type: "peaks", id: m.id, list: [] }); return; }
+  const { lat, lon, zo, Re, vis, A, N, ds, rmax, skyDist, mosaic } = last;
+  const dAng = 2 * Math.PI / A;
+  const rows = Array.isArray(m.rows) ? m.rows : [];
+  const list = [];
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 3) continue;
+    const [name, plat, plon] = row;
+    const ele = row.length > 3 && row[3] !== null && isFinite(row[3]) ? row[3] : null;
+    if (typeof name !== "string" || !isFinite(plat) || !isFinite(plon)) continue;
+    const d = greatCircleDistance(lat, lon, plat, plon);
+    if (!(d > PEAK_MIN_DISTANCE && d <= rmax)) continue;
+    const target = mosaicPosition(mosaic, plat, plon);
+    const z = sampleMosaic(mosaic, target.px, target.py);
+    if (!isFinite(z)) continue;
+    const p1 = lat * RAD, p2 = plat * RAD, dLon = (plon - lon) * RAD;
+    const sinDLon = Math.sin(dLon), cosDLon = Math.cos(dLon);
+    const bearing = Math.atan2(sinDLon * Math.cos(p2),
+      Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * cosDLon);
+    const az = ((bearing % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const ray = Math.round(az / dAng) % A;
+    const step = Math.round(d / ds);
+    let visible = false;
+    for (let dRay = -PEAK_RAY_WINDOW; dRay <= PEAK_RAY_WINDOW && !visible; dRay++) {
+      const sampleRay = (ray + dRay + A) % A;
+      for (let dStep = -PEAK_STEP_WINDOW; dStep <= PEAK_STEP_WINDOW; dStep++) {
+        const sampleStep = step + dStep;
+        if (sampleStep < 1 || sampleStep >= N) continue;
+        if (vis[sampleRay * N + sampleStep]) { visible = true; break; }
+      }
+    }
+    if (!visible) continue;
+    list.push({
+      name, ele, lat: plat, lon: plon, d, az,
+      ang: (z - d * d / (2 * Re) - zo) / d,
+      sky: Math.abs(d - skyDist[ray]) <= PEAK_SKY_STEPS * ds,
+    });
+  }
+  postMessage({ type: "peaks", id: m.id, list });
 }
 
 function query(m) {
@@ -351,4 +406,5 @@ onmessage = (e) => {
   else if (m.type === "tile") { tiles.set(m.key, m.data); const [z, x, y] = m.key.split("/").map(Number); shadeTile(m.key, z, x, y, m.data); }
   else if (m.type === "view") view(m);
   else if (m.type === "query") query(m);
+  else if (m.type === "peaks") peaks(m);
 };
