@@ -8,6 +8,15 @@ const MAX_MERCATOR_LAT = 85.05112878;
 // Selects the zoom at which a Mercator pixel is at most 110 m wide at the observer's
 // latitude: 156543.03 * cos(lat) / 2^z <= 110.
 const MAX_PIXEL_METRES = 110;
+// The coarse zoom flattens narrow summits: a z10 pixel is 98 m wide at 50° N and the
+// measured ground heights run low (Großer Feldberg 865 m vs SRTM 881 m, Zugspitze
+// 2,928 m vs 2,962 m; 2026-11-07). Two zoom levels finer give 4x the pixels (~24.5 m at
+// 50° N, about SRTM 1") and recover most of that loss. Five kilometres is the range in
+// which near ridges and summits dominate the horizon angle; the finer block stays a
+// handful of tiles (at most about 16 at the equator), so the extra fetch stays small.
+const FINE_RADIUS = 5000;
+const FINE_ZOOM_STEP = 2;
+const MAX_FINE_ZOOM = 15;
 // A named peak counts as visible when the view has a visible sample within this window
 // of its rounded (ray, step). One ray spacing is 2*pi*D/A (at most 77 m at 100 km with
 // the page's 8192 rays) and the step is 60 m, both smaller than a summit footprint at
@@ -64,6 +73,16 @@ function discTiles(lat, lon, rmax, z) {
     px0: tx0 * TILE_SIDE, py0: ty0 * TILE_SIDE,
     nx: tx1 - tx0 + 1, ny: ty1 - ty0 + 1,
   };
+}
+
+// The finer block near the observer: a disc of min(rmax, FINE_RADIUS) at
+// min(MAX_FINE_ZOOM, coarseZ + FINE_ZOOM_STEP). null when that is the coarse zoom itself.
+function fineGeometry(lat, lon, rmax, coarseZ) {
+  const z = Math.min(MAX_FINE_ZOOM, coarseZ + FINE_ZOOM_STEP);
+  if (z === coarseZ) return null;
+  const radius = Math.min(rmax, FINE_RADIUS);
+  if (!(radius > 0)) return null;
+  return { z, radius, block: discTiles(lat, lon, radius, z) };
 }
 
 // One Int16 mosaic covering the disc's tile block, with unwrapped x. Missing tiles keep
@@ -176,27 +195,36 @@ function blockHasKey(z, block, key) {
   return false;
 }
 
-function prepare(m) {
-  const z = zoomFor(m.lat);
-  const block = discTiles(m.lat, m.lon, m.rmax, z);
-  const total = block.nx * block.ny;
-  const limit = Math.max(600, 2 * total);
-  const evicted = [];
-  if (tiles.size > limit) {
-    for (const key of tiles.keys()) {
-      if (!blockHasKey(z, block, key)) {
-        tiles.delete(key);
-        evicted.push(key);
-      }
-    }
-  }
-  const keys = [];
+// Appends every key of a block the store does not hold yet.
+function collectMissingKeys(z, block, keys) {
   for (let ty = block.ty0; ty <= block.ty1; ty++) {
     for (let tx = block.tx0; tx <= block.tx1; tx++) {
       const key = tileKey(z, tx, ty);
       if (!tiles.has(key)) keys.push(key);
     }
   }
+}
+
+function prepare(m) {
+  const z = zoomFor(m.lat);
+  const block = discTiles(m.lat, m.lon, m.rmax, z);
+  const fine = fineGeometry(m.lat, m.lon, m.rmax, z);
+  const total = block.nx * block.ny + (fine ? fine.block.nx * fine.block.ny : 0);
+  const limit = Math.max(600, 2 * total);
+  const evicted = [];
+  if (tiles.size > limit) {
+    for (const key of tiles.keys()) {
+      const inCoarse = blockHasKey(z, block, key);
+      const inFine = fine ? blockHasKey(fine.z, fine.block, key) : false;
+      if (!inCoarse && !inFine) {
+        tiles.delete(key);
+        evicted.push(key);
+      }
+    }
+  }
+  const keys = [];
+  collectMissingKeys(z, block, keys);
+  if (fine) collectMissingKeys(fine.z, fine.block, keys);
   lastPrepare = { z, lat: m.lat, lon: m.lon, rmax: m.rmax };
   postMessage({ type: "need", id: m.id, z, keys, total, evicted });
 }
@@ -208,9 +236,20 @@ function view(m) {
   const t = m.t || 0;
   if (!lastPrepare) { last = null; postMessage({ type: "view", id, error: "outside" }); return; }
   const mosaic = buildMosaic(lat, lon, rmax, lastPrepare.z);
-  const z0 = sampleMosaic(mosaic, pixelX(lon, mosaic.z), pixelY(lat, mosaic.z));
+  const fine = fineGeometry(lat, lon, rmax, mosaic.z);
+  const fineMosaic = fine ? buildMosaic(lat, lon, fine.radius, fine.z) : null;
+  // The fine grid is a power-of-two multiple of the coarse one (4x when FINE_ZOOM_STEP
+  // is 2), so a coarse pixel coordinate converts with one multiply; the hot loop still
+  // calls neither log nor tan.
+  const fineScale = fineMosaic ? 2 ** (fineMosaic.z - mosaic.z) : 1;
+  const observerPx = pixelX(lon, mosaic.z), observerPy = pixelY(lat, mosaic.z);
+  let z0 = fineMosaic
+    ? sampleMosaic(fineMosaic, observerPx * fineScale, observerPy * fineScale)
+    : NaN;
+  if (!isFinite(z0)) z0 = sampleMosaic(mosaic, observerPx, observerPy);
   if (!isFinite(z0)) { last = null; postMessage({ type: "view", id, error: "outside" }); return; }
   const A = m.rays || 4096, ds = 60, N = Math.floor(rmax / ds) + 1;
+  const fineSteps = fineMosaic ? Math.floor(fine.radius / ds) : 0;
   const zo = z0 + h, Re = R / (1 - k), cosl = Math.cos(lat * RAD);
   const dAng = 2 * Math.PI / A;
   const vis = new Uint8Array(A * N);
@@ -224,7 +263,6 @@ function view(m) {
   // (measured for lat 0 and lat 70).
   const K = 32;
   const worldWidth = worldPixels(mosaic.z);
-  const observerPx = pixelX(lon, mosaic.z), observerPy = pixelY(lat, mosaic.z);
   const sinLat0 = Math.sin(lat * RAD), cosLat0 = Math.cos(lat * RAD);
   const segCount = N > 1 ? Math.ceil((N - 1) / K) : 0;
   const segEnd = new Int32Array(segCount), segSin = new Float64Array(segCount), segCos = new Float64Array(segCount);
@@ -250,7 +288,12 @@ function view(m) {
       let px = segPx0, py = segPy0;
       for (let i = seg * K + 1; i <= segEndI; i++) {
         px += dPx; py += dPy;
-        const z = sampleMosaic(mosaic, px, py);
+        // The fine mosaic owns the near field; a sample it cannot serve (missing fine
+        // tile) falls back to the coarse one instead of ending the ray.
+        let z = fineMosaic && i <= fineSteps
+          ? sampleMosaic(fineMosaic, px * fineScale, py * fineScale)
+          : NaN;
+        if (!isFinite(z)) z = sampleMosaic(mosaic, px, py);
         if (!isFinite(z)) { edge = true; break ray; }
         const d = i * ds;
         const ang = (z - d * d / (2 * Re) - zo) / d;
@@ -317,7 +360,7 @@ function view(m) {
       if (vis[a * N + step]) mask[j * pw + i] = 255;
     }
   }
-  last = { lat, lon, zo, Re, t, mosaic, vis, A, N, ds, rmax, skyDist };
+  last = { lat, lon, zo, Re, t, mosaic, fineMosaic, fineScale, vis, A, N, ds, rmax, skyDist };
   // skyDist stays out of the transfer list: `last` keeps it for later `peaks` messages,
   // and transferring a buffer would detach the worker's copy. Structured clone copies it.
   postMessage({ type: "view", id, lat, lon, A, rmax, z0, zo, area, far, edge, bbox: [x0, y0, x1, y1], pw, ph, mask,
@@ -370,10 +413,13 @@ function peaks(m) {
 
 function query(m) {
   if (!last) return;
-  const { lat, lon, zo, Re, t, mosaic } = last;
+  const { lat, lon, zo, Re, t, mosaic, fineMosaic, fineScale } = last;
   const D = greatCircleDistance(lat, lon, m.lat, m.lon);
   const target = mosaicPosition(mosaic, m.lat, m.lon);
-  const zt = sampleMosaic(mosaic, target.px, target.py);
+  let zt = fineMosaic && D <= FINE_RADIUS
+    ? sampleMosaic(fineMosaic, target.px * fineScale, target.py * fineScale)
+    : NaN;
+  if (!isFinite(zt)) zt = sampleMosaic(mosaic, target.px, target.py);
   if (!isFinite(zt)) { postMessage({ type: "query", qid: m.qid, D, z: NaN }); return; }
   const ds = 30, n = Math.floor(D / ds);
   const p1 = lat * RAD, p2 = m.lat * RAD, dLon = (m.lon - lon) * RAD;
@@ -389,7 +435,10 @@ function query(m) {
     const sampleLat = Math.asin(sinP1 * cosDelta + cosP1 * sinDelta * cosBearing);
     const sampleLon = lon * RAD + Math.atan2(sinBearing * sinDelta * cosP1, cosDelta - sinP1 * Math.sin(sampleLat));
     const sample = mosaicPosition(mosaic, sampleLat / RAD, ((sampleLon / RAD + 540) % 360) - 180);
-    const z = sampleMosaic(mosaic, sample.px, sample.py);
+    let z = fineMosaic && d <= FINE_RADIUS
+      ? sampleMosaic(fineMosaic, sample.px * fineScale, sample.py * fineScale)
+      : NaN;
+    if (!isFinite(z)) z = sampleMosaic(mosaic, sample.px, sample.py);
     if (!isFinite(z)) break;
     const ang = (z - d * d / (2 * Re) - zo) / d;
     if (ang > maxA) maxA = ang;
