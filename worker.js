@@ -1,22 +1,142 @@
-const S = 1200, SZ = 1201;
+// Elevation tiles are AWS Terrarium PNGs: 256 x 256 Web Mercator pixels, height in
+// metres = R*256 + G + B/256 - 32768. The page fetches them, converts to Int16 metres and
+// posts them here; -32768 means "no data".
+const TILE_SIDE = 256, TILE_PIXELS = TILE_SIDE * TILE_SIDE;
 const RAD = Math.PI / 180;
-let LA0, LO0, NLA, NLO, R;
-let tiles = null;
+const NO_DATA = -32768;
+const MAX_MERCATOR_LAT = 85.05112878;
+// Selects the zoom at which a Mercator pixel is at most 110 m wide at the observer's
+// latitude: 156543.03 * cos(lat) / 2^z <= 110.
+const MAX_PIXEL_METRES = 110;
+
+let R;
+let tiles = new Map();
+let lastPrepare = null;
 let last = null;
 
-function elev(lat, lon) {
-  const la = Math.floor(lat), lo = Math.floor(lon);
-  if (la < LA0 || la >= LA0 + NLA || lo < LO0 || lo >= LO0 + NLO) return NaN;
-  const t = tiles[(la - LA0) * NLO + (lo - LO0)];
-  if (!t) return NaN;
-  const y = (la + 1 - lat) * S, x = (lon - lo) * S;
-  let r = y | 0, c = x | 0; if (r >= S) r = S - 1; if (c >= S) c = S - 1;
-  const fy = y - r, fx = x - c, i = r * SZ + c;
-  const a = t[i], b = t[i + 1], cc = t[i + SZ], d = t[i + SZ + 1];
-  return (a + (b - a) * fx) * (1 - fy) + (cc + (d - cc) * fx) * fy;
+function zoomFor(lat) {
+  const metresPerPixel = 156543.03 * Math.cos(lat * RAD);
+  return Math.min(15, Math.max(0, Math.ceil(Math.log2(metresPerPixel / MAX_PIXEL_METRES))));
 }
 
 function mercY(lat) { return Math.log(Math.tan(Math.PI / 4 + lat * RAD / 2)); }
+
+function worldPixels(z) { return TILE_SIDE * 2 ** z; }
+
+function pixelX(lon, z) { return (lon + 180) / 360 * worldPixels(z); }
+
+function pixelY(lat, z) { return (1 - mercY(lat) / Math.PI) / 2 * worldPixels(z); }
+
+function wrapTileX(x, z) {
+  const side = 2 ** z;
+  return ((x % side) + side) % side;
+}
+
+function tileKey(z, x, y) { return z + "/" + wrapTileX(x, z) + "/" + y; }
+
+// Tile block of the disc of radius rmax around (lat, lon), plus one pixel of margin so
+// bilinear corners stay inside the block. Longitudes are kept unwrapped: the continuous
+// range around `lon` may run past +180 or below -180.
+function discTiles(lat, lon, rmax, z) {
+  const delta = rmax / R;
+  const latMax = Math.min(MAX_MERCATOR_LAT, lat + delta / RAD);
+  const latMin = Math.max(-MAX_MERCATOR_LAT, lat - delta / RAD);
+  const lonHalf = Math.abs(lat) + delta / RAD >= 90
+    ? 180
+    : Math.asin(Math.min(1, Math.sin(delta) / Math.cos(lat * RAD))) / RAD;
+  const xMin = pixelX(lon - lonHalf, z) - 1, xMax = pixelX(lon + lonHalf, z) + 1;
+  const yMin = pixelY(latMax, z) - 1, yMax = pixelY(latMin, z) + 1;
+  const tx0 = Math.floor(xMin / TILE_SIDE), tx1 = Math.floor(xMax / TILE_SIDE);
+  const ty0 = Math.max(0, Math.floor(yMin / TILE_SIDE));
+  const ty1 = Math.min(2 ** z - 1, Math.floor(yMax / TILE_SIDE));
+  return {
+    tx0, tx1, ty0, ty1,
+    px0: tx0 * TILE_SIDE, py0: ty0 * TILE_SIDE,
+    nx: tx1 - tx0 + 1, ny: ty1 - ty0 + 1,
+  };
+}
+
+// One Int16 mosaic covering the disc's tile block, with unwrapped x. Missing tiles keep
+// NO_DATA at every pixel, so sampling near them fails instead of reading stale values.
+function buildMosaic(lat, lon, rmax, z) {
+  const block = discTiles(lat, lon, rmax, z);
+  const width = block.nx * TILE_SIDE, height = block.ny * TILE_SIDE;
+  const data = new Int16Array(width * height).fill(NO_DATA);
+  for (let row = 0; row < block.ny; row++) {
+    const ty = block.ty0 + row;
+    for (let column = 0; column < block.nx; column++) {
+      const tile = tiles.get(tileKey(z, block.tx0 + column, ty));
+      if (!tile) continue;
+      for (let line = 0; line < TILE_SIDE; line++) {
+        data.set(
+          tile.subarray(line * TILE_SIDE, (line + 1) * TILE_SIDE),
+          (row * TILE_SIDE + line) * width + column * TILE_SIDE,
+        );
+      }
+    }
+  }
+  return { z, lat, lon, px0: block.px0, py0: block.py0, width, height, data };
+}
+
+// Global pixel coordinates of a geographic point, with longitude unwrapped to the mosaic's
+// centre so a point east of the dateline has a larger x than the observer.
+function mosaicPosition(mosaic, lat, lon) {
+  let dLon = lon - mosaic.lon;
+  if (dLon > 180) dLon -= 360;
+  else if (dLon < -180) dLon += 360;
+  return {
+    px: pixelX(mosaic.lon, mosaic.z) + dLon / 360 * worldPixels(mosaic.z),
+    py: pixelY(lat, mosaic.z),
+  };
+}
+
+// Bilinear sample; NaN when the point is outside the mosaic or any corner has no data.
+function sampleMosaic(mosaic, px, py) {
+  const u = px - mosaic.px0 - 0.5, v = py - mosaic.py0 - 0.5;
+  const column = Math.floor(u), row = Math.floor(v);
+  if (column < 0 || row < 0 || column >= mosaic.width - 1 || row >= mosaic.height - 1) return NaN;
+  const fx = u - column, fy = v - row;
+  const i = row * mosaic.width + column;
+  const a = mosaic.data[i], b = mosaic.data[i + 1];
+  const c = mosaic.data[i + mosaic.width], d = mosaic.data[i + mosaic.width + 1];
+  if (a === NO_DATA || b === NO_DATA || c === NO_DATA || d === NO_DATA) return NaN;
+  return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy;
+}
+
+function shadeTile(key, z, x, y, data) {
+  const out = new Uint8ClampedArray(TILE_PIXELS * 4);
+  const zen = 45 * RAD, azi = 315 * RAD, zf = 1.6;
+  const cz = Math.cos(zen), sz = Math.sin(zen);
+  const scale = worldPixels(z);
+  for (let row = 0; row < TILE_SIDE; row++) {
+    const globalY = y * TILE_SIDE + row + 0.5;
+    const lat = (2 * Math.atan(Math.exp((1 - 2 * globalY / scale) * Math.PI)) - Math.PI / 2) / RAD;
+    // Terrarium pixels are square in Mercator, so one pixel spans this many metres both
+    // east-west and north-south.
+    const spacing = 156543.03 * Math.cos(lat * RAD) / 2 ** z;
+    for (let column = 0; column < TILE_SIDE; column++) {
+      const rowNorth = row > 0 ? row - 1 : 0, rowSouth = row < TILE_SIDE - 1 ? row + 1 : TILE_SIDE - 1;
+      const columnWest = column > 0 ? column - 1 : 0, columnEast = column < TILE_SIDE - 1 ? column + 1 : TILE_SIDE - 1;
+      const dzdx = (data[row * TILE_SIDE + columnEast] - data[row * TILE_SIDE + columnWest])
+        / ((columnEast - columnWest) * spacing) * zf;
+      const dzdy = (data[rowNorth * TILE_SIDE + column] - data[rowSouth * TILE_SIDE + column])
+        / ((rowSouth - rowNorth) * spacing) * zf;
+      const slope = Math.atan(Math.hypot(dzdx, dzdy));
+      const aspect = Math.atan2(dzdy, -dzdx);
+      const hs = cz * Math.cos(slope) + sz * Math.sin(slope) * Math.cos(azi - (Math.PI / 2 - aspect));
+      const v = hs - cz;
+      const offset = (row * TILE_SIDE + column) * 4;
+      if (v < 0) {
+        out[offset] = out[offset + 1] = out[offset + 2] = 0;
+        out[offset + 3] = Math.min(200, -v * 340);
+      } else {
+        out[offset] = out[offset + 1] = out[offset + 2] = 255;
+        out[offset + 3] = Math.min(150, v * 260);
+      }
+    }
+  }
+  postMessage({ type: "shade", key, z, x, y, data: out }, [out.buffer]);
+}
 
 // Point reached from (lat, lon) after `distance` metres along the great circle whose
 // initial bearing is `bearing` radians (clockwise from north).
@@ -35,36 +155,40 @@ function greatCircleDistance(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.asin(Math.sqrt(Math.min(1, a)));
 }
 
-function shade(idx) {
-  const t = tiles[idx];
-  const la = LA0 + Math.floor(idx / NLO), lo = LO0 + idx % NLO;
-  const W = 480, y1 = mercY(la + 1), y0 = mercY(la);
-  const H = Math.round(W * (y1 - y0) / RAD);
-  const out = new Uint8ClampedArray(W * H * 4);
-  const step = S / W;
-  const zen = 45 * RAD, azi = 315 * RAD, zf = 1.6;
-  const cz = Math.cos(zen), sz = Math.sin(zen);
-  const cy = 92.66;
-  for (let j = 0; j < H; j++) {
-    const lat = (2 * Math.atan(Math.exp(y1 - (j + 0.5) / H * (y1 - y0))) - Math.PI / 2) / RAD;
-    const r = Math.min(S - 1, Math.max(1, Math.round((la + 1 - lat) * S)));
-    const cx = cy * Math.cos(lat * RAD);
-    const s = Math.max(1, Math.round(step));
-    for (let i = 0; i < W; i++) {
-      const c = Math.min(S - 1, Math.max(1, Math.round((i + 0.5) * step)));
-      const r0 = Math.max(0, r - s), r1 = Math.min(S, r + s), c0 = Math.max(0, c - s), c1 = Math.min(S, c + s);
-      const dzdx = (t[r * SZ + c1] - t[r * SZ + c0]) / ((c1 - c0) * cx) * zf;
-      const dzdy = (t[r0 * SZ + c] - t[r1 * SZ + c]) / ((r1 - r0) * cy) * zf;
-      const slope = Math.atan(Math.hypot(dzdx, dzdy));
-      const aspect = Math.atan2(dzdy, -dzdx);
-      const hs = cz * Math.cos(slope) + sz * Math.sin(slope) * Math.cos(azi - (Math.PI / 2 - aspect));
-      const v = hs - cz;
-      const o = (j * W + i) * 4;
-      if (v < 0) { out[o] = out[o + 1] = out[o + 2] = 0; out[o + 3] = Math.min(200, -v * 340); }
-      else { out[o] = out[o + 1] = out[o + 2] = 255; out[o + 3] = Math.min(150, v * 260); }
+// Whether a held tile belongs to the disc's block. x is compared after wrapping because
+// the block's continuous x range may run past the dateline.
+function blockHasKey(z, block, key) {
+  const [keyZ, keyX, keyY] = key.split("/").map(Number);
+  if (keyZ !== z || keyY < block.ty0 || keyY > block.ty1) return false;
+  for (let tx = block.tx0; tx <= block.tx1; tx++) {
+    if (wrapTileX(tx, z) === keyX) return true;
+  }
+  return false;
+}
+
+function prepare(m) {
+  const z = zoomFor(m.lat);
+  const block = discTiles(m.lat, m.lon, m.rmax, z);
+  const total = block.nx * block.ny;
+  const limit = Math.max(600, 2 * total);
+  const evicted = [];
+  if (tiles.size > limit) {
+    for (const key of tiles.keys()) {
+      if (!blockHasKey(z, block, key)) {
+        tiles.delete(key);
+        evicted.push(key);
+      }
     }
   }
-  postMessage({ type: "shade", idx, la, lo, W, H, data: out }, [out.buffer]);
+  const keys = [];
+  for (let ty = block.ty0; ty <= block.ty1; ty++) {
+    for (let tx = block.tx0; tx <= block.tx1; tx++) {
+      const key = tileKey(z, tx, ty);
+      if (!tiles.has(key)) keys.push(key);
+    }
+  }
+  lastPrepare = { z, lat: m.lat, lon: m.lon, rmax: m.rmax };
+  postMessage({ type: "need", id: m.id, z, keys, total, evicted });
 }
 
 function view(m) {
@@ -72,8 +196,10 @@ function view(m) {
   // Target height above the ground. A target top is visible when its angle clears the
   // terrain horizon by t / d; the terrain horizon itself stays terrain-only.
   const t = m.t || 0;
-  const z0 = elev(lat, lon);
-  if (!isFinite(z0)) { postMessage({ type: "view", id, error: "outside" }); return; }
+  if (!lastPrepare) { last = null; postMessage({ type: "view", id, error: "outside" }); return; }
+  const mosaic = buildMosaic(lat, lon, rmax, lastPrepare.z);
+  const z0 = sampleMosaic(mosaic, pixelX(lon, mosaic.z), pixelY(lat, mosaic.z));
+  if (!isFinite(z0)) { last = null; postMessage({ type: "view", id, error: "outside" }); return; }
   const A = m.rays || 4096, ds = 60, N = Math.floor(rmax / ds) + 1;
   const zo = z0 + h, Re = R / (1 - k), cosl = Math.cos(lat * RAD);
   const dAng = 2 * Math.PI / A;
@@ -82,9 +208,13 @@ function view(m) {
   const CM = 24;
   const crA = new Float32Array(A * CM), crD = new Float32Array(A * CM), crN = new Uint8Array(A);
   let area = 0, far = { d: 0, az: 0, z: 0 }, edge = false;
-  // Great-circle points every K samples (32 * 60 m = 1920 m), with lat/lon interpolated
-  // linearly between them; the position error over a block stays below 1 m.
+  // Great-circle points every K samples (32 * 60 m = 1920 m). Only those points are
+  // converted to Mercator pixels; x/y are interpolated linearly inside a block, so the
+  // hot loop never calls log/tan. The added position error stays below 1 m at 200 km
+  // (measured for lat 0 and lat 70).
   const K = 32;
+  const worldWidth = worldPixels(mosaic.z);
+  const observerPx = pixelX(lon, mosaic.z), observerPy = pixelY(lat, mosaic.z);
   const sinLat0 = Math.sin(lat * RAD), cosLat0 = Math.cos(lat * RAD);
   const segCount = N > 1 ? Math.ceil((N - 1) / K) : 0;
   const segEnd = new Int32Array(segCount), segSin = new Float64Array(segCount), segCos = new Float64Array(segCount);
@@ -95,17 +225,22 @@ function view(m) {
   for (let a = 0; a < A; a++) {
     const az = a * dAng, sinAz = Math.sin(az), cosAz = Math.cos(az);
     let maxA = -Infinity, maxI = 0, maxZ = z0, pend = -1, pendA = 0, hidRun = 0, nc = 0;
-    let segLat0 = lat, segLon0 = lon;
+    let segPx0 = observerPx, segPy0 = observerPy;
     ray: for (let seg = 0; seg < segCount; seg++) {
       const p2 = Math.asin(sinLat0 * segCos[seg] + cosLat0 * segSin[seg] * cosAz);
       const segLat1 = p2 / RAD;
       const segLon1 = lon + Math.atan2(sinAz * segSin[seg] * cosLat0, segCos[seg] - sinLat0 * Math.sin(p2)) / RAD;
+      let dLon = segLon1 - lon;
+      if (dLon > 180) dLon -= 360;
+      else if (dLon < -180) dLon += 360;
+      const segPx1 = observerPx + dLon / 360 * worldWidth;
+      const segPy1 = pixelY(segLat1, mosaic.z);
       const segEndI = segEnd[seg], segSteps = segEndI - seg * K;
-      const dLatStep = (segLat1 - segLat0) / segSteps, dLonStep = (segLon1 - segLon0) / segSteps;
-      let plat = segLat0, plon = segLon0;
+      const dPx = (segPx1 - segPx0) / segSteps, dPy = (segPy1 - segPy0) / segSteps;
+      let px = segPx0, py = segPy0;
       for (let i = seg * K + 1; i <= segEndI; i++) {
-        plat += dLatStep; plon += dLonStep;
-        const z = elev(plat, plon);
+        px += dPx; py += dPy;
+        const z = sampleMosaic(mosaic, px, py);
         if (!isFinite(z)) { edge = true; break ray; }
         const d = i * ds;
         const ang = (z - d * d / (2 * Re) - zo) / d;
@@ -124,7 +259,7 @@ function view(m) {
           }
         }
       }
-      segLat0 = segLat1; segLon0 = segLon1;
+      segPx0 = segPx1; segPy0 = segPy1;
     }
     crN[a] = nc;
     const sky = destinationPoint(lat, lon, az, maxI * ds);
@@ -172,7 +307,7 @@ function view(m) {
       if (vis[a * N + step]) mask[j * pw + i] = 255;
     }
   }
-  last = { lat, lon, zo, Re, t };
+  last = { lat, lon, zo, Re, t, mosaic };
   postMessage({ type: "view", id, A, rmax, z0, zo, area, far, edge, bbox: [x0, y0, x1, y1], pw, ph, mask,
     skyAng, skyDist, skyLat, skyLon, skyZ, crA, crD, crN, CM },
     [mask.buffer, skyAng.buffer, skyDist.buffer, skyLat.buffer, skyLon.buffer, skyZ.buffer, crA.buffer, crD.buffer, crN.buffer]);
@@ -180,9 +315,10 @@ function view(m) {
 
 function query(m) {
   if (!last) return;
-  const { lat, lon, zo, Re, t } = last;
+  const { lat, lon, zo, Re, t, mosaic } = last;
   const D = greatCircleDistance(lat, lon, m.lat, m.lon);
-  const zt = elev(m.lat, m.lon);
+  const target = mosaicPosition(mosaic, m.lat, m.lon);
+  const zt = sampleMosaic(mosaic, target.px, target.py);
   if (!isFinite(zt)) { postMessage({ type: "query", qid: m.qid, D, z: NaN }); return; }
   const ds = 30, n = Math.floor(D / ds);
   const p1 = lat * RAD, p2 = m.lat * RAD, dLon = (m.lon - lon) * RAD;
@@ -197,7 +333,8 @@ function query(m) {
     const sinDelta = Math.sin(delta), cosDelta = Math.cos(delta);
     const sampleLat = Math.asin(sinP1 * cosDelta + cosP1 * sinDelta * cosBearing);
     const sampleLon = lon * RAD + Math.atan2(sinBearing * sinDelta * cosP1, cosDelta - sinP1 * Math.sin(sampleLat));
-    const z = elev(sampleLat / RAD, sampleLon / RAD);
+    const sample = mosaicPosition(mosaic, sampleLat / RAD, ((sampleLon / RAD + 540) % 360) - 180);
+    const z = sampleMosaic(mosaic, sample.px, sample.py);
     if (!isFinite(z)) break;
     const ang = (z - d * d / (2 * Re) - zo) / d;
     if (ang > maxA) maxA = ang;
@@ -209,8 +346,9 @@ function query(m) {
 
 onmessage = (e) => {
   const m = e.data;
-  if (m.type === "init") { LA0 = m.la0; LO0 = m.lo0; NLA = m.nla; NLO = m.nlo; R = m.R; tiles = new Array(NLA * NLO).fill(null); last = null; }
-  else if (m.type === "tile") { tiles[m.idx] = m.data; shade(m.idx); }
+  if (m.type === "init") { R = m.R; tiles = new Map(); lastPrepare = null; last = null; }
+  else if (m.type === "prepare") prepare(m);
+  else if (m.type === "tile") { tiles.set(m.key, m.data); const [z, x, y] = m.key.split("/").map(Number); shadeTile(m.key, z, x, y, m.data); }
   else if (m.type === "view") view(m);
   else if (m.type === "query") query(m);
 };

@@ -6,7 +6,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const TILE_SIDE = 1201;
+const TILE_SIDE = 256;
+const RAD = Math.PI / 180;
+
+let prepareId = 0;
 
 // loadWorker(sourcePath?) -> { send(message), messages }
 // The worker's postMessage calls append to `messages` (transfer lists are ignored);
@@ -29,9 +32,45 @@ function loadWorker(sourcePath = path.join(__dirname, "..", "worker.js")) {
   };
 }
 
-// flatTile(heightMetres) -> Int16Array(1201 * 1201) filled with heightMetres
+// flatTile(heightMetres) -> Int16Array(256 * 256) filled with heightMetres
 function flatTile(heightMetres) {
   return new Int16Array(TILE_SIDE * TILE_SIDE).fill(heightMetres);
 }
 
-module.exports = { loadWorker, flatTile };
+function longitudeOfPixel(globalPixelX, z) {
+  return globalPixelX / (TILE_SIDE * 2 ** z) * 360 - 180;
+}
+
+function latitudeOfPixel(globalPixelY, z) {
+  const mercatorY = (1 - 2 * globalPixelY / (TILE_SIDE * 2 ** z)) * Math.PI;
+  return (2 * Math.atan(Math.exp(mercatorY)) - Math.PI / 2) / RAD;
+}
+
+// loadTerrain(worker, { lat, lon, rmax }, heightAt?, skipKey?) -> { z, keys }
+// Sends prepare, reads the `need` reply, builds every requested tile by calling
+// heightAt(latDeg, lonDeg) at each pixel centre (default flat 0), skips keys where
+// skipKey(key) is true, and sends the tiles. Returns the zoom and the requested keys.
+function loadTerrain(worker, { lat, lon, rmax }, heightAt, skipKey) {
+  const id = ++prepareId;
+  worker.send({ type: "prepare", id, lat, lon, rmax });
+  const need = worker.messages.filter((message) => message.type === "need" && message.id === id).pop();
+  if (!need) throw new Error("worker did not reply to prepare with a need message");
+  for (const key of need.keys) {
+    if (skipKey && skipKey(key)) continue;
+    const [z, x, y] = key.split("/").map(Number);
+    const data = flatTile(0);
+    if (heightAt) {
+      for (let row = 0; row < TILE_SIDE; row++) {
+        const pixelLat = latitudeOfPixel(y * TILE_SIDE + row + 0.5, z);
+        for (let column = 0; column < TILE_SIDE; column++) {
+          const pixelLon = longitudeOfPixel(x * TILE_SIDE + column + 0.5, z);
+          data[row * TILE_SIDE + column] = heightAt(pixelLat, pixelLon);
+        }
+      }
+    }
+    worker.send({ type: "tile", key, data });
+  }
+  return { z: need.z, keys: need.keys };
+}
+
+module.exports = { loadWorker, flatTile, loadTerrain };
