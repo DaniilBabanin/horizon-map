@@ -19,6 +19,12 @@
 # The downloaded PBF is deleted after filtering unless --keep-extracts is
 # given; the small peaks-*.osm.pbf files stay.
 #
+# --reuse-filtered skips the download and filtering of a source whose
+# peaks-<slug>.osm.pbf is already in the cache (and is non-empty): the script
+# prints "reusing ..." and goes straight to the export.  Without the flag the
+# source is downloaded and filtered again, as before.  This is how the cells
+# are rebuilt after the 96 GB planet file has been deleted.
+#
 # Default output is data/peaks; use --out for a validation run.  The cache
 # defaults to $HORIZONMAP_OSM_CACHE, else
 # ${XDG_CACHE_HOME:-$HOME/.cache}/horizonmap/osm; use --cache to keep a
@@ -27,6 +33,7 @@
 # Usage:
 #   scripts/build_peaks.sh [--out DIR] [--cache DIR] [--connections N]
 #                          [--max-rate BYTES_PER_S] [--keep-extracts]
+#                          [--reuse-filtered]
 #   scripts/build_peaks.sh --continents [options]
 #   scripts/build_peaks.sh --only URL [options]
 #
@@ -44,6 +51,7 @@ output_directory="data/peaks"
 only_url=""
 use_continents=false
 keep_extracts=false
+reuse_filtered=false
 planet_url="https://ftp.fau.de/osm-planet/pbf/planet-latest.osm.pbf"
 connections=8
 # Measured 2026-11-07 at the same moment (curl, 8 s each, in parallel):
@@ -291,6 +299,10 @@ while [ "$#" -gt 0 ]; do
             keep_extracts=true
             shift
             ;;
+        --reuse-filtered)
+            reuse_filtered=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -345,17 +357,22 @@ fi
 # Download each source and keep only its peaks, so later steps never touch the
 # full-size file again.  Without --keep-extracts the big download is deleted
 # after filtering; only the small peaks-*.osm.pbf stays in the cache.
+# --reuse-filtered exports an existing peaks-*.osm.pbf instead of rebuilding it.
 peak_extracts=()
 for url in "${urls[@]}"; do
     slug=$(url_slug "$url")
     extract="$cache_directory/$(url_file_name "$url")"
     peak_extract="$cache_directory/peaks-${slug}.osm.pbf"
     echo "==> $slug"
-    download_extract "$url" "$extract"
-    filter_peaks "$extract" "$peak_extract"
-    if [ "$keep_extracts" = false ]; then
-        rm -f "$extract"
-        echo "    removed $extract (use --keep-extracts to keep it)"
+    if [ "$reuse_filtered" = true ] && [ -s "$peak_extract" ]; then
+        echo "    reusing $peak_extract ($(human_size "$(stat -c %s "$peak_extract")"))"
+    else
+        download_extract "$url" "$extract"
+        filter_peaks "$extract" "$peak_extract"
+        if [ "$keep_extracts" = false ]; then
+            rm -f "$extract"
+            echo "    removed $extract (use --keep-extracts to keep it)"
+        fi
     fi
     peak_extracts+=("$peak_extract")
 done
