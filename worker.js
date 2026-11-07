@@ -69,6 +69,9 @@ function shade(idx) {
 
 function view(m) {
   const { lat, lon, h, k, rmax, id } = m;
+  // Target height above the ground. A target top is visible when its angle clears the
+  // terrain horizon by t / d; the terrain horizon itself stays terrain-only.
+  const t = m.t || 0;
   const z0 = elev(lat, lon);
   if (!isFinite(z0)) { postMessage({ type: "view", id, error: "outside" }); return; }
   const A = m.rays || 4096, ds = 60, N = Math.floor(rmax / ds) + 1;
@@ -106,10 +109,13 @@ function view(m) {
         if (!isFinite(z)) { edge = true; break ray; }
         const d = i * ds;
         const ang = (z - d * d / (2 * Re) - zo) / d;
-        if (ang >= maxA) {
-          vis[a * N + i] = 1; maxA = ang; maxI = i; maxZ = z;
+        if (ang + t / d >= maxA) {
+          vis[a * N + i] = 1;
           area += d * dAng * ds;
           if (d > far.d) far = { d, az, z };
+        }
+        if (ang >= maxA) {
+          maxA = ang; maxI = i; maxZ = z;
           pend = i; pendA = ang; hidRun = 0;
         } else {
           if (pend > 0 && ++hidRun === 4) {
@@ -166,7 +172,7 @@ function view(m) {
       if (vis[a * N + step]) mask[j * pw + i] = 255;
     }
   }
-  last = { lat, lon, zo, Re };
+  last = { lat, lon, zo, Re, t };
   postMessage({ type: "view", id, A, rmax, z0, zo, area, far, edge, bbox: [x0, y0, x1, y1], pw, ph, mask,
     skyAng, skyDist, skyLat, skyLon, skyZ, crA, crD, crN, CM },
     [mask.buffer, skyAng.buffer, skyDist.buffer, skyLat.buffer, skyLon.buffer, skyZ.buffer, crA.buffer, crD.buffer, crN.buffer]);
@@ -174,7 +180,7 @@ function view(m) {
 
 function query(m) {
   if (!last) return;
-  const { lat, lon, zo, Re } = last;
+  const { lat, lon, zo, Re, t } = last;
   const D = greatCircleDistance(lat, lon, m.lat, m.lon);
   const zt = elev(m.lat, m.lon);
   if (!isFinite(zt)) { postMessage({ type: "query", qid: m.qid, D, z: NaN }); return; }
@@ -197,7 +203,7 @@ function query(m) {
     if (ang > maxA) maxA = ang;
   }
   const angT = D > 0 ? (zt - D * D / (2 * Re) - zo) / D : Infinity;
-  const hidden = angT >= maxA ? 0 : (maxA - angT) * D;
+  const hidden = D === 0 || angT + t / D >= maxA ? 0 : (maxA - angT) * D - t;
   postMessage({ type: "query", qid: m.qid, D, z: zt, hidden });
 }
 
