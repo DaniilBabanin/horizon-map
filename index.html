@@ -155,11 +155,25 @@ canvas { display: block; width: 100%; height: 100%; }
       </div>
     </div>
 
+    <div class="group">
+      <label class="label" for="t">Target height above the ground</label>
+      <div class="row">
+        <input type="number" id="t" min="0" max="1000" step="any" value="0">
+        <span class="unit">m</span>
+      </div>
+      <div class="chips" id="tpresets">
+        <button class="chip" data-t="0">Ground 0</button>
+        <button class="chip" data-t="10">House 10 m</button>
+        <button class="chip" data-t="50">Church 50 m</button>
+        <button class="chip" data-t="200">Wind turbine 200 m</button>
+      </div>
+    </div>
+
     <div class="status" id="status" aria-live="polite">Loading terrain…</div>
 
     <section class="readout">
       <div>
-        <div class="label">Farthest land you can see</div>
+        <div class="label" id="farLabel">Farthest land you can see</div>
         <div class="big"><span id="farKm">–</span><span class="u">km</span></div>
         <div class="sub" id="farSub">&nbsp;</div>
       </div>
@@ -173,7 +187,7 @@ canvas { display: block; width: 100%; height: 100%; }
     </section>
 
     <div class="legend">
-      <span class="sw vis"></span><span>Ground you can see</span>
+      <span class="sw vis"></span><span id="legendVis">Ground you can see</span>
       <span class="sw sky"></span><span>Skyline: the last ridge in each direction</span>
       <span class="sw ring"></span><span>Where the horizon would be on flat ground</span>
       <span class="sw reg"></span><span>Edge of the terrain data</span>
@@ -229,7 +243,7 @@ canvas { display: block; width: 100%; height: 100%; }
   const W = 1024;
   const REG = { la0: 48, la1: 52, lo0: 6, lo1: 11 };
   const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
-  const state = { lat: 49.9989, lon: 8.2739, h: 24, k: 0.13, rmax: 100000 };
+  const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000 };
 
   const nf = (v, d = 0) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
   const km = (m) => { const k = m / 1000; return k < 10 ? nf(k, 2) : k < 100 ? nf(k, 1) : nf(k, 0); };
@@ -243,6 +257,7 @@ canvas { display: block; width: 100%; height: 100%; }
   const canvas = $("map"), ctx = canvas.getContext("2d"), wrap = $("mapwrap");
   const pano = $("pano"), pctx = pano.getContext("2d"), pwrap = $("panowrap");
   const hIn = $("h"), hR = $("hr");
+  const tIn = $("t");
   const LOGMIN = Math.log10(0.5), LOGMAX = Math.log10(12000);
   const toSlider = (h) => Math.round((Math.log10(Math.max(0.5, h)) - LOGMIN) / (LOGMAX - LOGMIN) * 1000);
   const fromSlider = (v) => { const h = Math.pow(10, LOGMIN + v / 1000 * (LOGMAX - LOGMIN)); return h < 10 ? Math.round(h * 10) / 10 : h < 1000 ? Math.round(h) : Math.round(h / 10) * 10; };
@@ -394,7 +409,7 @@ canvas { display: block; width: 100%; height: 100%; }
       if (id !== viewId) return;
       const rays = raysFor(state.rmax);
       setStatus("Tracing " + nf(rays) + " sightlines…");
-      worker.postMessage({ type: "view", id, lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, rays });
+      worker.postMessage({ type: "view", id, lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, rays, t: state.t });
     }, 120);
   }
 
@@ -618,12 +633,27 @@ canvas { display: block; width: 100%; height: 100%; }
   pano.addEventListener("pointerleave", () => { ptip.hidden = true; hoverAz = null; hoverPt = null; draw(); drawPano(); });
 
   // ---------- inputs ----------
+  function markChips(container, key, value) {
+    for (const b of document.querySelectorAll(container + " .chip")) b.setAttribute("aria-pressed", String(+b.dataset[key] === value));
+  }
+  function onChipClick(container, key, apply) {
+    $(container).addEventListener("click", (e) => { const b = e.target.closest(".chip"); if (b) apply(+b.dataset[key]); });
+  }
+  // A target height reads as "50 m" in the labels, with one decimal only when it has one.
+  const targetHeight = (t) => nf(t, Number.isInteger(t) ? 0 : 1) + " m";
+  function updateLabels() {
+    const t = state.t;
+    $("legendVis").textContent = t > 0 ? "Where the top of a " + targetHeight(t) + " target is visible" : "Ground you can see";
+    $("farLabel").textContent = t > 0 ? "Farthest spot a " + targetHeight(t) + " target shows" : "Farthest land you can see";
+  }
   function changed(refit) {
     $("coords").textContent = nf(Math.abs(state.lat), 4) + "° " + (state.lat >= 0 ? "N" : "S") + ", " + nf(Math.abs(state.lon), 4) + "° " + (state.lon >= 0 ? "E" : "W");
-    for (const b of document.querySelectorAll("#presets .chip")) b.setAttribute("aria-pressed", String(+b.dataset.h === state.h));
+    markChips("#presets", "h", state.h);
+    markChips("#tpresets", "t", state.t);
+    updateLabels();
     $("flat").textContent = len(flatHorizon(state.h));
     try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch {}
-    const params = new URLSearchParams({ lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax });
+    const params = new URLSearchParams({ lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, t: state.t });
     history.replaceState(null, "", "#" + params);
     if (refit) fit();
     draw(); compute();
@@ -635,11 +665,19 @@ canvas { display: block; width: 100%; height: 100%; }
     if (from !== "range") hR.value = toSlider(state.h);
     changed();
   }
+  function setTarget(t, from) {
+    if (!isFinite(t) || t < 0) return;
+    state.t = Math.min(1000, t);
+    if (from !== "num") tIn.value = state.t;
+    changed();
+  }
   hIn.addEventListener("input", () => setHeight(parseFloat(hIn.value), "num"));
   hR.addEventListener("input", () => setHeight(fromSlider(+hR.value), "range"));
+  tIn.addEventListener("input", () => setTarget(parseFloat(tIn.value), "num"));
   $("refr").addEventListener("change", (e) => { state.k = parseFloat(e.target.value); changed(); });
   $("rmax").addEventListener("change", (e) => { state.rmax = +e.target.value; changed(true); });
-  $("presets").addEventListener("click", (e) => { const b = e.target.closest(".chip"); if (b) setHeight(+b.dataset.h); });
+  onChipClick("presets", "h", setHeight);
+  onChipClick("tpresets", "t", setTarget);
   $("fit").addEventListener("click", () => fit());
 
   function placeAt(lat, lon) {
@@ -660,7 +698,8 @@ canvas { display: block; width: 100%; height: 100%; }
       if (isFinite(m.z)) {
         tip.append(document.createTextNode(" · " + nf(m.z, 0) + " m ASL · "));
         const b = document.createElement("b");
-        b.textContent = m.hidden === 0 ? "visible" : "hidden, " + len(m.hidden) + " below your sightline";
+        const top = state.t > 0 ? "top " : "";
+        b.textContent = top + (m.hidden === 0 ? "visible" : "hidden, " + len(m.hidden) + " below your sightline");
         tip.append(b);
       }
       tip.hidden = false;
@@ -753,13 +792,15 @@ canvas { display: block; width: 100%; height: 100%; }
     const lat = parseFloat(p.get("lat")), lon = parseFloat(p.get("lon")), h = parseFloat(p.get("h"));
     if (!isFinite(lat) || !isFinite(lon) || !isFinite(h) || h <= 0 || !inRegion(lat, lon)) return false;
     state.lat = lat; state.lon = lon; state.h = Math.min(12000, h);
-    const k = parseFloat(p.get("k")), rmax = parseFloat(p.get("rmax"));
+    const k = parseFloat(p.get("k")), rmax = parseFloat(p.get("rmax")), t = parseFloat(p.get("t"));
     if (isFinite(k)) state.k = k;
     if (isFinite(rmax)) state.rmax = rmax;
+    if (isFinite(t) && t >= 0 && t <= 1000) state.t = t;
     return true;
   }
   function syncInputs() {
     hIn.value = state.h; hR.value = toSlider(state.h);
+    tIn.value = state.t;
     $("refr").value = String(state.k); if (!$("refr").value) { state.k = 0.13; $("refr").value = "0.13"; }
     $("rmax").value = String(state.rmax); if (!$("rmax").value) { state.rmax = 100000; $("rmax").value = "100000"; }
   }
