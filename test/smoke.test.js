@@ -3,24 +3,15 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadWorker, flatTile } = require("./harness.js");
+const { loadWorker, loadTerrain } = require("./harness.js");
 
 const R = 6371008.8;
-const REGION = { la0: 48, lo0: 6, nla: 4, nlo: 5 };
+const OBSERVER = { lat: 50, lon: 8, rmax: 100000 };
 
 function startWorker() {
-  const worker = loadWorker();
-  worker.send({ type: "init", la0: REGION.la0, lo0: REGION.lo0, nla: REGION.nla, nlo: REGION.nlo, R });
+  const worker = loadWorker(process.env.WORKER_SRC);
+  worker.send({ type: "init", R });
   return worker;
-}
-
-function loadFlatTiles(worker, heightMetres) {
-  for (let la = REGION.la0; la < REGION.la0 + REGION.nla; la++) {
-    for (let lo = REGION.lo0; lo < REGION.lo0 + REGION.nlo; lo++) {
-      const idx = (la - REGION.la0) * REGION.nlo + (lo - REGION.lo0);
-      worker.send({ type: "tile", idx, data: flatTile(heightMetres) });
-    }
-  }
 }
 
 function lastViewMessage(worker) {
@@ -31,8 +22,8 @@ function lastViewMessage(worker) {
 
 test("flat ground: farthest point sits at the geometric horizon", () => {
   const worker = startWorker();
-  loadFlatTiles(worker, 0);
-  worker.send({ type: "view", id: 1, lat: 50, lon: 8, h: 100, k: 0, rmax: 100000 });
+  loadTerrain(worker, OBSERVER);
+  worker.send({ type: "view", id: 1, ...OBSERVER, h: 100, k: 0 });
   const reply = lastViewMessage(worker);
   assert.equal(reply.id, 1);
   const expectedHorizon = Math.sqrt(2 * R * 100);
@@ -43,9 +34,10 @@ test("flat ground: farthest point sits at the geometric horizon", () => {
 });
 
 test("view outside the region replies with an error", () => {
+  // prepare sets the zoom but loads no tiles: the observer's elevation is unavailable.
   const worker = startWorker();
-  loadFlatTiles(worker, 0);
-  worker.send({ type: "view", id: 2, lat: 47, lon: 8, h: 100, k: 0, rmax: 100000 });
+  loadTerrain(worker, OBSERVER, undefined, () => true);
+  worker.send({ type: "view", id: 2, ...OBSERVER, h: 100, k: 0 });
   const reply = lastViewMessage(worker);
   assert.equal(reply.id, 2);
   assert.equal(reply.error, "outside");
@@ -53,8 +45,8 @@ test("view outside the region replies with an error", () => {
 
 test("view honours the optional rays count", () => {
   const worker = startWorker();
-  loadFlatTiles(worker, 0);
-  worker.send({ type: "view", id: 3, lat: 50, lon: 8, h: 100, k: 0, rmax: 100000, rays: 1024 });
+  loadTerrain(worker, OBSERVER);
+  worker.send({ type: "view", id: 3, ...OBSERVER, h: 100, k: 0, rays: 1024 });
   const reply = lastViewMessage(worker);
   assert.equal(reply.id, 3);
   assert.equal(reply.A, 1024);
@@ -64,13 +56,14 @@ test("two workers keep separate state", () => {
   // A has terrain, B has none. If the workers shared one onmessage handler, the later
   // load would replace the handler that owns A's tiles and A's view would fail.
   const loadedWorker = startWorker();
-  loadFlatTiles(loadedWorker, 0);
+  loadTerrain(loadedWorker, OBSERVER);
   const emptyWorker = startWorker();
-  loadedWorker.send({ type: "view", id: 4, lat: 50, lon: 8, h: 100, k: 0, rmax: 100000, rays: 64 });
+  loadTerrain(emptyWorker, OBSERVER, undefined, () => true);
+  loadedWorker.send({ type: "view", id: 4, ...OBSERVER, h: 100, k: 0, rays: 64 });
   const loadedReply = lastViewMessage(loadedWorker);
   assert.equal(loadedReply.id, 4);
   assert.equal(loadedReply.error, undefined);
-  emptyWorker.send({ type: "view", id: 5, lat: 50, lon: 8, h: 100, k: 0, rmax: 100000, rays: 64 });
+  emptyWorker.send({ type: "view", id: 5, ...OBSERVER, h: 100, k: 0, rays: 64 });
   const emptyReply = lastViewMessage(emptyWorker);
   assert.equal(emptyReply.id, 5);
   assert.equal(emptyReply.error, "outside");

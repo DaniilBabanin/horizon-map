@@ -7,31 +7,19 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadWorker, flatTile } = require("./harness.js");
+const { loadWorker, loadTerrain } = require("./harness.js");
 
 const R = 6371008.8;
 const RAD = Math.PI / 180;
-const REGION = { la0: 48, lo0: 6, nla: 4, nlo: 5 };
 const RAY_STEP = 60;
+const OBSERVER = { lat: 50, lon: 8, rmax: 100000 };
 
 let messageId = 0;
 
 function startWorker() {
   const worker = loadWorker(process.env.WORKER_SRC);
-  worker.send({ type: "init", ...REGION, R });
+  worker.send({ type: "init", R });
   return worker;
-}
-
-function tileIndex(lat, lon) {
-  return (lat - REGION.la0) * REGION.nlo + (lon - REGION.lo0);
-}
-
-function loadTerrain(worker) {
-  for (let lat = REGION.la0; lat < REGION.la0 + REGION.nla; lat++) {
-    for (let lon = REGION.lo0; lon < REGION.lo0 + REGION.nlo; lon++) {
-      worker.send({ type: "tile", idx: tileIndex(lat, lon), data: flatTile(0) });
-    }
-  }
 }
 
 function runView(worker, params) {
@@ -61,7 +49,7 @@ function sameBytes(left, right) {
 // Loading tiles runs hillshade for each one, so the flat terrain is built once at module load
 // and reused; every test sends its own view before querying.
 const flatWorker = startWorker();
-loadTerrain(flatWorker);
+loadTerrain(flatWorker, OBSERVER);
 
 test("target height: farthest visible point is the two-horizon sum", () => {
   const h = 100;
