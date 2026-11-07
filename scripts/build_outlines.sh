@@ -10,12 +10,10 @@
 # mapshaper over the file rebuilds the topology and changes 18 arcs, so the
 # property is renamed in place instead.
 #
-# lakes.json has no Natural Earth match. Today's file has 2,690 polygons whose
-# outlines are clipped along Web Mercator zoom-5 tile edges (the Caspian at
-# 40.9799 N, Lake Superior at 90 W, Lake Victoria at 33.75 E and 0 N), while
-# Natural Earth 1:10m lakes v4.1.0 has 1,354 polygons and no Antarctic lakes.
-# The script builds that layer as a stand-in and warns; see
-# research/global-coverage-2026-11-07.md section C for the candidates.
+# lakes.json is Natural Earth 1:10m lakes v4.1.0 (1,354 polygons, public domain).
+# It replaced an earlier file of unknown source and licence on 2026-11-07 (user
+# decision): 2,690 polygons clipped along Web Mercator zoom-5 tile edges, with
+# Antarctic lakes that Natural Earth does not have.
 #
 # Usage: scripts/build_outlines.sh [--out DIR]
 #
@@ -120,10 +118,6 @@ NODE
 
 download "$NE_LAKES_URL" "$NE_LAKES_JSON"
 verify_checksum "$NE_LAKES_JSON" "$NE_LAKES_SHA256"
-
-echo "==> WARNING: today's lakes.json is not a Natural Earth layer"
-echo "    (2,690 polygons clipped to Web Mercator z5 tiles; NE 1:10m lakes ${NE_TAG} has 1,354)."
-echo "    The rebuilt lakes.json is the nearest Natural Earth stand-in."
 
 echo "==> building lakes.json with mapshaper $MAPSHAPER_VERSION"
 npx --yes "mapshaper@${MAPSHAPER_VERSION}" "$NE_LAKES_JSON" \
