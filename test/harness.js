@@ -1,9 +1,10 @@
-// Loads worker.js in a fresh node:vm context so it can be driven from node:test.
+// Loads worker.js as a plain function so it can be driven from node:test.
+// The worker is a classic script: its top-level declarations stay inside the wrapper function
+// and its `onmessage = ...` assignment binds to the local below, so loaded workers are isolated.
 "use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
-const vm = require("node:vm");
 
 const TILE_SIDE = 1201;
 
@@ -12,14 +13,19 @@ const TILE_SIDE = 1201;
 // send() dispatches a message to the worker's onmessage handler synchronously.
 function loadWorker(sourcePath = path.join(__dirname, "..", "worker.js")) {
   const messages = [];
-  const context = vm.createContext({
-    postMessage(message) { messages.push(message); },
-  });
   const source = fs.readFileSync(sourcePath, "utf8");
-  new vm.Script(source, { filename: sourcePath }).runInContext(context);
+  // `let onmessage` catches the worker's global assignment; without it the assignment would
+  // write a Node global and a second worker would replace the first worker's handler. The
+  // wrapper returns a dispatcher, not the handler value, so it reads that binding on every
+  // send: a captured value would hide the leak and keep isolated-looking workers working.
+  const startWorker = new Function(
+    "postMessage",
+    "let onmessage;\n" + source + "\nreturn (message) => onmessage(message);\n//# sourceURL=" + sourcePath,
+  );
+  const dispatch = startWorker((message) => { messages.push(message); });
   return {
     messages,
-    send(message) { context.onmessage({ data: message }); },
+    send(message) { dispatch({ data: message }); },
   };
 }
 

@@ -1,9 +1,8 @@
 // Measures how the ray count trades accuracy against speed in worker.js's view().
 // Prints one Markdown table; progress and total runtime go to stderr.
-// Absolute times run ~10x slower than in a browser: test/harness.js runs worker.js in node:vm,
-// where every global lookup (Math.*) goes through the context. Measured 2026-11-07 at
-// Feldberg/100 km/4096 rays: 3410 ms here vs 301 ms with the same code outside node:vm.
-// Ratios between rows hold.
+// Measured 2026-11-07 at Feldberg/100 km/4096 rays through test/harness.js: 293-302 ms over three
+// runs. The earlier 3410 ms figure came from running worker.js in node:vm, whose context
+// indirection made every global lookup (Math.*) ~10x slower. Ratios between rows hold.
 "use strict";
 
 const path = require("node:path");

@@ -59,3 +59,19 @@ test("view honours the optional rays count", () => {
   assert.equal(reply.id, 3);
   assert.equal(reply.A, 1024);
 });
+
+test("two workers keep separate state", () => {
+  // A has terrain, B has none. If the workers shared one onmessage handler, the later
+  // load would replace the handler that owns A's tiles and A's view would fail.
+  const loadedWorker = startWorker();
+  loadFlatTiles(loadedWorker, 0);
+  const emptyWorker = startWorker();
+  loadedWorker.send({ type: "view", id: 4, lat: 50, lon: 8, h: 100, k: 0, rmax: 100000, rays: 64 });
+  const loadedReply = lastViewMessage(loadedWorker);
+  assert.equal(loadedReply.id, 4);
+  assert.equal(loadedReply.error, undefined);
+  emptyWorker.send({ type: "view", id: 5, lat: 50, lon: 8, h: 100, k: 0, rmax: 100000, rays: 64 });
+  const emptyReply = lastViewMessage(emptyWorker);
+  assert.equal(emptyReply.id, 5);
+  assert.equal(emptyReply.error, "outside");
+});
