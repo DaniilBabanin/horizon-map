@@ -199,7 +199,7 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
 
     <div class="note">
-      <p>Hover the map to check any spot: whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama to find which ridge forms the skyline in that direction.</p>
+      <p>Hover the map to check any spot (long-press on a touch screen): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama to find which ridge forms the skyline in that direction.</p>
       <p>Terrain is SRTM 3″ (about 90 m) covering 48–52° N, 6–11° E: Rhine-Main, Rhineland-Palatinate, Saarland, Hesse, northern Baden-Württemberg and southern NRW. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
     </div>
   </aside>
@@ -375,6 +375,10 @@ canvas { display: block; width: 100%; height: 100%; }
     for (const [la, lo] of tilesFor(state.lat, state.lon, 1e7)) { try { await loadTile(la, lo); } catch (e) { console.error("hillshade tile", la, lo, e); } }
   }
 
+  // 2026-11-07 bench (Großer Feldberg, 65536-ray reference): 8192 rays leave 3.4 % of mask pixels
+  // wrong beyond 50 km (0.46 s at 100 km), 16384 leave 1.7–1.9 % (1.6 s at 200 km), 4096 leave 6.3–6.7 %.
+  const raysFor = (rmax) => Math.max(8192, 2 ** Math.ceil(Math.log2(2 * Math.PI * rmax / 80)));
+
   let computeTimer = 0;
   function compute() {
     clearTimeout(computeTimer);
@@ -388,8 +392,9 @@ canvas { display: block; width: 100%; height: 100%; }
         await Promise.all(need.map(([la, lo]) => loadTile(la, lo).then(() => { done++; if (id === viewId) setStatus("Loading terrain " + done + " of " + need.length + "…"); })));
       } catch (e) { setStatus("Terrain data failed to load. Reload the page to try again.", true); return; }
       if (id !== viewId) return;
-      setStatus("Tracing 4,096 sightlines…");
-      worker.postMessage({ type: "view", id, lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax });
+      const rays = raysFor(state.rmax);
+      setStatus("Tracing " + nf(rays) + " sightlines…");
+      worker.postMessage({ type: "view", id, lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, rays });
     }, 120);
   }
 
@@ -641,21 +646,12 @@ canvas { display: block; width: 100%; height: 100%; }
     if (!inRegion(lat, lon)) { showHint("Terrain data covers 48–52° N, 6–11° E (the dotted box). Pick a spot inside it."); return false; }
     showHint(""); state.lat = lat; state.lon = lon; changed(); return true;
   }
-  canvas.addEventListener("click", (e) => {
-    const r = canvas.getBoundingClientRect();
-    const ll = proj.invert(T.invert([e.clientX - r.left, e.clientY - r.top]));
-    if (ll && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
-  });
 
   const tip = $("tip");
   let lastQ = 0;
-  canvas.addEventListener("pointermove", (e) => {
-    if (e.pointerType !== "mouse" || !view) return;
-    const r = canvas.getBoundingClientRect();
-    const px = e.clientX - r.left, py = e.clientY - r.top;
+  function queryAt(px, py) {
     const ll = proj.invert(T.invert([px, py]));
     if (!ll) return;
-    const now = performance.now(); if (now - lastQ < 40) return; lastQ = now;
     const id = ++qid;
     pending.set(id, (m) => {
       if (id !== qid) return;
@@ -673,8 +669,49 @@ canvas { display: block; width: 100%; height: 100%; }
       tip.style.top = (py + 16) + "px";
     });
     worker.postMessage({ type: "query", qid: id, lat: ll[1], lon: ll[0] });
+  }
+
+  // Touch and pen have no hover, so a long press runs the same query the mouse hover does.
+  const LONG_PRESS_MS = 500;  // common Android/iOS long-press duration
+  const TOUCH_SLOP_PX = 10;   // typical touch slop; more movement is a pan or pinch
+  let pressTimer = 0, pressStart = null, longPressFired = false, pointerKind = "mouse";
+  function cancelPress() {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = 0; }
+    pressStart = null;
+  }
+
+  canvas.addEventListener("click", (e) => {
+    if (longPressFired) { longPressFired = false; return; }
+    const r = canvas.getBoundingClientRect();
+    const ll = proj.invert(T.invert([e.clientX - r.left, e.clientY - r.top]));
+    if (ll && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
   });
-  canvas.addEventListener("pointerleave", () => { tip.hidden = true; qid++; });
+  canvas.addEventListener("pointerdown", (e) => {
+    pointerKind = e.pointerType;
+    tip.hidden = true;
+    cancelPress();
+    longPressFired = false;
+    if ((e.pointerType !== "touch" && e.pointerType !== "pen") || !view) return;
+    const r = canvas.getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    pressStart = [e.clientX, e.clientY];
+    pressTimer = setTimeout(() => {
+      pressTimer = 0; pressStart = null; longPressFired = true;
+      queryAt(px, py);
+    }, LONG_PRESS_MS);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (pressTimer && pressStart && Math.hypot(e.clientX - pressStart[0], e.clientY - pressStart[1]) > TOUCH_SLOP_PX) cancelPress();
+    if (e.pointerType !== "mouse" || !view) return;
+    const r = canvas.getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    const now = performance.now(); if (now - lastQ < 40) return; lastQ = now;
+    queryAt(px, py);
+  });
+  canvas.addEventListener("pointerup", cancelPress);
+  canvas.addEventListener("pointercancel", () => { cancelPress(); longPressFired = false; });
+  canvas.addEventListener("pointerleave", (e) => { if (e.pointerType !== "mouse") return; tip.hidden = true; qid++; });
+  canvas.addEventListener("contextmenu", (e) => { if (pointerKind !== "mouse") e.preventDefault(); });
 
   // ---------- search ----------
   const q = $("q"), res = $("results");
