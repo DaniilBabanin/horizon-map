@@ -6,7 +6,9 @@ Input is the GeoJSON feature sequence produced by
 ``natural=peak`` extract (see ``scripts/build_peaks.sh``).  One output file
 per 2x2 degree cell is written, named by the cell's south-west corner with
 even latitude and longitude, e.g. ``N50E008.json``, ``S34W072.json``.
-Each file holds a compact JSON array of ``[name, lat, lon, ele]`` rows.
+Each file holds a compact JSON array of ``[name, lat, lon, ele]`` rows (a
+fifth ``nameEn`` element is added when the English name differs from
+``name``).
 
 Cells are half-open: a point on a cell edge belongs to the cell whose south-west
 corner it is, i.e. latitudes use ``floor(lat / 2) * 2`` (same for longitudes).
@@ -15,9 +17,15 @@ just below an edge that rounds onto it lands in the cell containing the stored
 coordinates.
 
 Rows are sorted by ``ele`` descending, rows without ``ele`` last, ties by
-name (then by latitude and longitude, for a deterministic file).  Peaks without
-a ``name`` are dropped.  ``ele`` is an integer number of metres or ``null``;
-OSM values are parsed as follows:
+name (then by latitude and longitude, for a deterministic file).  A row is
+``[name, lat, lon, ele]`` and, when the peak has a usable English name, a
+fifth element ``nameEn``.  ``name`` is the local OSM ``name`` tag when it is a
+non-empty string, else ``name:en``; surrounding whitespace is stripped, and a
+missing, blank or whitespace-only tag counts as empty.  Peaks with neither tag
+are dropped.  ``nameEn`` is the stripped ``name:en`` appended only when it is
+non-empty and differs from ``name``, so rows without a distinct English name
+keep 4 elements.  ``ele`` is an integer number of metres or ``null``; OSM
+values are parsed as follows:
 
 * a bare number, or one with a trailing ``m`` / ``metre`` / ``meter`` suffix
   (case-insensitive), is metres;
@@ -161,7 +169,7 @@ def cell_name(latitude, longitude):
 
 def peak_sort_key(peak):
     """Sort by elevation descending, nulls last, then name/lat/lon."""
-    name, latitude, longitude, elevation = peak
+    name, latitude, longitude, elevation = peak[:4]
     return (
         elevation is None,
         -(elevation if elevation is not None else 0),
@@ -169,6 +177,36 @@ def peak_sort_key(peak):
         latitude,
         longitude,
     )
+
+
+def peak_labels(properties):
+    """Return ``(name, name_en)`` for a peak, or ``None`` when both tags are empty.
+
+    ``name`` is the local ``name`` tag when non-empty, else ``name:en``.
+    ``name_en`` is the stripped ``name:en`` only when it is non-empty and
+    differs from ``name``; otherwise it is ``None``, so the row keeps 4
+    elements.  Both tags are stripped of surrounding whitespace, and a tag
+    that is missing, not a string, or whitespace-only counts as empty.
+    """
+    name = properties.get("name")
+    if isinstance(name, str):
+        name = name.strip() or None
+    else:
+        name = None
+
+    name_en = properties.get("name:en")
+    if isinstance(name_en, str):
+        name_en = name_en.strip() or None
+    else:
+        name_en = None
+
+    if name is None:
+        name = name_en
+    if name is None:
+        return None
+    if name_en == name:
+        name_en = None
+    return name, name_en
 
 
 def iter_features(stream):
@@ -189,7 +227,8 @@ def iter_features(stream):
 def build_cells(features):
     """Group peaks into cells; returns ``(cells, stats)``.
 
-    ``cells`` maps cell names to lists of ``(name, lat, lon, ele)`` tuples.
+    ``cells`` maps cell names to lists of ``(name, lat, lon, ele)`` tuples,
+    or ``(name, lat, lon, ele, name_en)`` when the English name differs.
     """
     cells = {}
     seen_objects = set()
@@ -217,11 +256,11 @@ def build_cells(features):
             continue
         seen_objects.add(object_key)
 
-        name = properties.get("name")
-        if not isinstance(name, str) or not name.strip():
+        labels = peak_labels(properties)
+        if labels is None:
             stats["unnamed"] += 1
             continue
-        name = name.strip()
+        name, name_en = labels
 
         try:
             longitude = clean_coordinate(coordinates[0])
@@ -233,6 +272,8 @@ def build_cells(features):
 
         elevation = parse_ele(properties.get("ele"))
         peak = (name, latitude, longitude, elevation)
+        if name_en is not None:
+            peak += (name_en,)
         cells.setdefault(cell_name(latitude, longitude), []).append(peak)
         stats["peaks"] += 1
 
@@ -299,10 +340,20 @@ def selftest():
                 f"cell_name({latitude}, {longitude}): expected {expected!r}, got {actual!r}"
             )
 
-    def feature(object_id, name, latitude, longitude, elevation, object_type="node"):
+    def feature(
+        object_id,
+        name,
+        latitude,
+        longitude,
+        elevation,
+        object_type="node",
+        name_en=None,
+    ):
         properties = {"@type": object_type, "@id": object_id}
         if name is not None:
             properties["name"] = name
+        if name_en is not None:
+            properties["name:en"] = name_en
         if elevation is not None:
             properties["ele"] = elevation
         return {
@@ -328,14 +379,34 @@ def selftest():
         feature(9007, None, 10.5, 20.5, "100"),
         # Rounds across the 50/8 cell edge, so it belongs to N50E008.
         feature(1006, "Rounded Edge", 49.999999, 7.999999, "1"),
+        # Both tags differ: local name stays, English is the fifth element.
+        feature(1010, "Lokalname A", 50.6, 8.6, "700", name_en="English Peak A"),
+        # Only the local name: the row keeps 4 elements.
+        feature(1011, "Lokalname B", 50.6, 8.6, "600"),
+        # Only name:en: it becomes the name, with no duplicate fifth element.
+        feature(1012, None, 50.7, 8.7, "800", name_en="English Only Peak"),
+        # A whitespace-only name:en is empty, so name is used and no fifth element.
+        feature(1013, "Fallback Peak", 50.6, 8.6, "400", name_en="   "),
+        # Surrounding whitespace is stripped from both tags.
+        feature(1014, "  Spaced Name  ", 50.6, 8.6, "900", name_en="  Spaced English  "),
+        # Neither tag has usable text: dropped.
+        feature(1015, "  ", 50.6, 8.6, "100", name_en="   "),
+        # Equal after stripping: no fifth element.
+        feature(1016, "  Equal Peak  ", 50.6, 8.6, "950", name_en="Equal Peak"),
     ]
 
     cells, stats = build_cells(sample_features)
     expected_cells = {
         "N50E008": [
             ("Comma Peak", 51.9, 9.9, 1235),
+            ("Equal Peak", 50.6, 8.6, 950),
+            ("Spaced Name", 50.6, 8.6, 900, "Spaced English"),
             ("Großer Feldberg", 50.2326, 8.4586, 879),
+            ("English Only Peak", 50.7, 8.7, 800),
+            ("Lokalname A", 50.6, 8.6, 700, "English Peak A"),
+            ("Lokalname B", 50.6, 8.6, 600),
             ("Edge Peak", 50.0, 8.0, 500),
+            ("Fallback Peak", 50.6, 8.6, 400),
             ("Alpha Peak", 50.5, 8.5, 300),
             ("Beta Peak", 50.5, 8.5, 300),
             ("Rounded Edge", 50.0, 8.0, 1),
@@ -350,11 +421,11 @@ def selftest():
         raise AssertionError(f"cells: expected {expected_cells!r}, got {actual_cells!r}")
 
     expected_stats = {
-        "features": 13,
+        "features": 20,
         "duplicates": 1,
-        "unnamed": 2,
+        "unnamed": 3,
         "non_point": 0,
-        "peaks": 10,
+        "peaks": 16,
     }
     if stats != expected_stats:
         raise AssertionError(f"stats: expected {expected_stats!r}, got {stats!r}")
