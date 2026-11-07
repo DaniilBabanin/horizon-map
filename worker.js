@@ -155,9 +155,31 @@ function greatCircleDistance(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.asin(Math.sqrt(Math.min(1, a)));
 }
 
+// Whether a held tile belongs to the disc's block. x is compared after wrapping because
+// the block's continuous x range may run past the dateline.
+function blockHasKey(z, block, key) {
+  const [keyZ, keyX, keyY] = key.split("/").map(Number);
+  if (keyZ !== z || keyY < block.ty0 || keyY > block.ty1) return false;
+  for (let tx = block.tx0; tx <= block.tx1; tx++) {
+    if (wrapTileX(tx, z) === keyX) return true;
+  }
+  return false;
+}
+
 function prepare(m) {
   const z = zoomFor(m.lat);
   const block = discTiles(m.lat, m.lon, m.rmax, z);
+  const total = block.nx * block.ny;
+  const limit = Math.max(600, 2 * total);
+  const evicted = [];
+  if (tiles.size > limit) {
+    for (const key of tiles.keys()) {
+      if (!blockHasKey(z, block, key)) {
+        tiles.delete(key);
+        evicted.push(key);
+      }
+    }
+  }
   const keys = [];
   for (let ty = block.ty0; ty <= block.ty1; ty++) {
     for (let tx = block.tx0; tx <= block.tx1; tx++) {
@@ -166,7 +188,7 @@ function prepare(m) {
     }
   }
   lastPrepare = { z, lat: m.lat, lon: m.lon, rmax: m.rmax };
-  postMessage({ type: "need", id: m.id, z, keys, total: block.nx * block.ny });
+  postMessage({ type: "need", id: m.id, z, keys, total, evicted });
 }
 
 function view(m) {
