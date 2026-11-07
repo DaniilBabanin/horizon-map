@@ -6,25 +6,33 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadWorker, flatTile } = require("./harness.js");
+const { loadWorker, loadTerrain } = require("./harness.js");
 
 const R = 6371008.8;
 const RAD = Math.PI / 180;
-const REGION = { la0: 48, lo0: 6, nla: 4, nlo: 5 };
-const TILE_SIDE = 1201;
-const CELLS_PER_DEGREE = 1200;
 const RAY_STEP = 60;
 
-const WALL_LAT = 50;
-const WALL_ROWS = [120, 121, 122];
+// Same zoom rule as the worker: 156543.03 m per pixel at the equator divided by 2^z,
+// chosen so that a pixel is at most 110 m wide at the observer's latitude.
+function zoomFor(lat) {
+  return Math.min(15, Math.max(0, Math.ceil(Math.log2(156543.03 * Math.cos(lat * RAD) / 110))));
+}
+
+// The 3000 m wall is the band starting at 50.8983 N and three pixels deep at the view's
+// zoom, so a 60 m ray sample always meets the plateau.
+const WALL_SOUTH_LAT = 50.8983;
 const WALL_HEIGHT = 3000;
-const WALL_SOUTH_LAT = 51 - 122 / CELLS_PER_DEGREE;
 
 const OBSERVER = { lat: 50.1, lon: 8.1 };
 const VIEW = { ...OBSERVER, h: 10, k: 0, rmax: 200000, rays: 4096 };
 const RAY = 512;
 const BEARING = 45;
 const MASK_WORLD = 1024;
+
+const VIEW_ZOOM = zoomFor(OBSERVER.lat);
+const VIEW_PIXEL_METRES = 156543.03 * Math.cos(OBSERVER.lat * RAD) / 2 ** VIEW_ZOOM;
+const VIEW_PIXEL_LATITUDE = VIEW_PIXEL_METRES / (R * RAD);
+const WALL_NORTH_LAT = WALL_SOUTH_LAT + 3 * VIEW_PIXEL_LATITUDE;
 
 let messageId = 0;
 
@@ -71,10 +79,6 @@ function mercY(lat) {
   return Math.log(Math.tan(Math.PI / 4 + lat * RAD / 2));
 }
 
-function tileIndex(lat, lon) {
-  return (lat - REGION.la0) * REGION.nlo + (lon - REGION.lo0);
-}
-
 function runView(worker, params) {
   worker.send({ type: "view", id: ++messageId, ...params });
   const reply = worker.messages[worker.messages.length - 1];
@@ -89,32 +93,40 @@ function runQuery(worker, params) {
   return reply;
 }
 
-// The wall is the 50.9 N .. 50.8983 N band across all five tiles of the 50 N row.
+function wallTerrain(lat) {
+  return lat >= WALL_SOUTH_LAT && lat <= WALL_NORTH_LAT ? WALL_HEIGHT : 0;
+}
+
+// For the mask test the wall face rises northward (0.1 m per m over 600 m): along the
+// 45 degree ray that is ~0.07 m/m, steeper than the ~0.04 m/m the elevation angle needs to
+// keep growing at ~127 km, so the whole ~850 m deep face is visible. A step wall shows only
+// its first 60 m sample, narrower than one 267 m mask pixel at rmax 200 km, so whether that
+// pixel lights up would depend on rounding.
+const RAMP_DEPTH_METRES = 600;
+const RAMP_NORTH_LAT = WALL_SOUTH_LAT + RAMP_DEPTH_METRES / (R * RAD);
+function rampTerrain(lat) {
+  if (lat < WALL_SOUTH_LAT || lat > RAMP_NORTH_LAT) return 0;
+  return WALL_HEIGHT + 0.1 * (lat - WALL_SOUTH_LAT) * R * RAD;
+}
+
 // Loading tiles runs hillshade for each one, so the terrain is built once at module load.
 const worker = loadWorker(process.env.WORKER_SRC);
-worker.send({ type: "init", ...REGION, R });
-for (let lat = REGION.la0; lat < REGION.la0 + REGION.nla; lat++) {
-  for (let lon = REGION.lo0; lon < REGION.lo0 + REGION.nlo; lon++) {
-    const data = flatTile(0);
-    if (lat === WALL_LAT) {
-      for (const row of WALL_ROWS) {
-        for (let column = 0; column < TILE_SIDE; column++) {
-          data[row * TILE_SIDE + column] = WALL_HEIGHT;
-        }
-      }
-    }
-    worker.send({ type: "tile", idx: tileIndex(lat, lon), data });
-  }
-}
+worker.send({ type: "init", R });
+loadTerrain(worker, { lat: OBSERVER.lat, lon: OBSERVER.lon, rmax: VIEW.rmax }, wallTerrain);
 
 const viewReply = runView(worker, VIEW);
 
+const rampWorker = loadWorker(process.env.WORKER_SRC);
+rampWorker.send({ type: "init", R });
+loadTerrain(rampWorker, { lat: OBSERVER.lat, lon: OBSERVER.lon, rmax: VIEW.rmax }, rampTerrain);
+const rampReply = runView(rampWorker, VIEW);
+
 test("a wall at 50.9 N is reached at the great-circle distance", () => {
   const wallDistance = distanceToLatitude(OBSERVER.lat, OBSERVER.lon, BEARING, WALL_SOUTH_LAT);
-  // The wall spans two 1-degree/1200 cells north of its southern edge, and a ray
-  // sample may sit up to one 60 m step beyond the edge.
-  const cellHeight = R * RAD / CELLS_PER_DEGREE;
-  const upper = wallDistance + 2 * cellHeight + RAY_STEP;
+  // The first full-height pixel centre lies within one pixel north of the southern edge;
+  // at a 45 degree bearing the ray covers that northward pixel in pixel / cos(45) metres,
+  // and a ray sample may sit up to one 60 m step beyond it.
+  const upper = wallDistance + VIEW_PIXEL_METRES / Math.cos(BEARING * RAD) + RAY_STEP;
 
   const skyDistance = viewReply.skyDist[RAY];
   assert.ok(
@@ -131,14 +143,17 @@ test("a wall at 50.9 N is reached at the great-circle distance", () => {
   );
 });
 
-test("the mask pixel containing the skyline point is visible", () => {
-  const [x0, y0, x1, y1] = viewReply.bbox;
-  const { pw, ph, mask } = viewReply;
+test("the mask pixel at the middle of a visible wall face is visible", () => {
+  const [x0, y0, x1, y1] = rampReply.bbox;
+  const { pw, ph, mask } = rampReply;
   const mx = (lon) => ((lon + 180) / 360) * MASK_WORLD;
   const my = (lat) => ((1 - mercY(lat) / Math.PI) / 2) * MASK_WORLD;
 
-  const column = Math.floor((mx(viewReply.skyLon[RAY]) - x0) / (x1 - x0) * pw);
-  const row = Math.floor((my(viewReply.skyLat[RAY]) - y0) / (y1 - y0) * ph);
+  const middleLat = (WALL_SOUTH_LAT + RAMP_NORTH_LAT) / 2;
+  const middle = destination(OBSERVER.lat, OBSERVER.lon, BEARING,
+    distanceToLatitude(OBSERVER.lat, OBSERVER.lon, BEARING, middleLat));
+  const column = Math.floor((mx(middle.lon) - x0) / (x1 - x0) * pw);
+  const row = Math.floor((my(middle.lat) - y0) / (y1 - y0) * ph);
   assert.ok(
     column >= 0 && column < pw && row >= 0 && row < ph,
     `skyline pixel ${column},${row} is outside the ${pw}x${ph} mask`,

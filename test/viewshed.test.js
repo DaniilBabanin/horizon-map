@@ -5,19 +5,34 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadWorker, flatTile } = require("./harness.js");
+const { loadWorker, loadTerrain } = require("./harness.js");
 
 const R = 6371008.8;
 const RAD = Math.PI / 180;
-const REGION = { la0: 48, lo0: 6, nla: 4, nlo: 5 };
-const TILE_SIDE = 1201;
-const CELLS_PER_DEGREE = 1200;
 const RAY_STEP = 60;
 const QUERY_STEP = 30;
 
-const WALL_TILE = { lat: 50, lon: 8 };
-const WALL_COLUMNS = [720, 721, 722];
+// Same zoom rule as the worker: 156543.03 m per pixel at the equator divided by 2^z,
+// chosen so that a pixel is at most 110 m wide at the observer's latitude.
+function zoomFor(lat) {
+  return Math.min(15, Math.max(0, Math.ceil(Math.log2(156543.03 * Math.cos(lat * RAD) / 110))));
+}
+
+function mercatorPixelY(lat, z) {
+  const mercatorY = Math.log(Math.tan(Math.PI / 4 + lat * RAD / 2));
+  return (1 - mercatorY / Math.PI) / 2 * 256 * 2 ** z;
+}
+
+const FLAT_OBSERVER = { lat: 50, lon: 8, rmax: 200000 };
+const WALL_OBSERVER = { lat: 50.5, lon: 8.5, rmax: 100000 };
+const WALL_LON = 8.6;
 const WALL_HEIGHT = 200;
+// The wall band is three pixels wide at the view's zoom, so a 60 m ray sample always
+// lands on the plateau; its first pixel centre lies somewhere in the first pixel east
+// of WALL_LON, which the query tolerance below accounts for.
+const WALL_ZOOM = zoomFor(WALL_OBSERVER.lat);
+const WALL_PIXEL_METRES = 156543.03 * Math.cos(WALL_OBSERVER.lat * RAD) / 2 ** WALL_ZOOM;
+const WALL_WIDTH_DEGREES = 3 * WALL_PIXEL_METRES / (R * RAD * Math.cos(WALL_OBSERVER.lat * RAD));
 
 let messageId = 0;
 
@@ -25,30 +40,12 @@ let messageId = 0;
 // mutated copy; unset, loadWorker falls back to worker.js.
 function startWorker() {
   const worker = loadWorker(process.env.WORKER_SRC);
-  worker.send({ type: "init", ...REGION, R });
+  worker.send({ type: "init", R });
   return worker;
 }
 
-function tileIndex(lat, lon) {
-  return (lat - REGION.la0) * REGION.nlo + (lon - REGION.lo0);
-}
-
-function loadTerrain(worker, tileFor) {
-  for (let lat = REGION.la0; lat < REGION.la0 + REGION.nla; lat++) {
-    for (let lon = REGION.lo0; lon < REGION.lo0 + REGION.nlo; lon++) {
-      worker.send({ type: "tile", idx: tileIndex(lat, lon), data: tileFor(lat, lon) });
-    }
-  }
-}
-
-function wallTile() {
-  const data = new Int16Array(TILE_SIDE * TILE_SIDE);
-  for (let row = 0; row < TILE_SIDE; row++) {
-    for (const column of WALL_COLUMNS) {
-      data[row * TILE_SIDE + column] = WALL_HEIGHT;
-    }
-  }
-  return data;
+function wallTerrain(lat, lon) {
+  return lon >= WALL_LON && lon <= WALL_LON + WALL_WIDTH_DEGREES ? WALL_HEIGHT : 0;
 }
 
 function runView(worker, params) {
@@ -72,11 +69,10 @@ function longitudeEastOf(lat, lon, distanceMetres) {
 // Loading tiles runs hillshade for each one, so both terrains are built once at module load
 // and reused; every test sends its own view before querying.
 const flatWorker = startWorker();
-loadTerrain(flatWorker, () => flatTile(0));
+loadTerrain(flatWorker, FLAT_OBSERVER);
 
 const wallWorker = startWorker();
-loadTerrain(wallWorker, (lat, lon) =>
-  lat === WALL_TILE.lat && lon === WALL_TILE.lon ? wallTile() : flatTile(0));
+loadTerrain(wallWorker, WALL_OBSERVER, wallTerrain);
 
 test("flat sphere: farthest visible point sits at sqrt(2*Re*h)", () => {
   for (const h of [10, 100, 1000]) {
@@ -135,16 +131,16 @@ test("wall: a 200 m ridge casts a shadow of known depth", () => {
 
   const viewReply = runView(wallWorker, { ...observer, h, k, rmax: 100000, rays: 4096 });
 
-  // The wall stands 0.1 degrees east of the observer; three columns span two cell widths.
+  // The wall starts 0.1 degrees east of the observer; its three pixels span three pixel widths.
   const Dw = 0.1 * R * RAD * cosLat;
-  const cellWidth = R * RAD * cosLat / CELLS_PER_DEGREE;
   const eastRay = 1024; // 90 degrees
 
   assert.equal(viewReply.skyZ[eastRay], WALL_HEIGHT);
   assert.ok(
     viewReply.skyDist[eastRay] >= Dw &&
-      viewReply.skyDist[eastRay] <= Dw + 2 * cellWidth + RAY_STEP,
-    `skyDist ${viewReply.skyDist[eastRay]} is outside [${Dw}, ${Dw + 2 * cellWidth + RAY_STEP}]`,
+      viewReply.skyDist[eastRay] <= Dw + 3 * WALL_PIXEL_METRES + RAY_STEP,
+    `skyDist ${viewReply.skyDist[eastRay]} is outside ` +
+      `[${Dw}, ${Dw + 3 * WALL_PIXEL_METRES + RAY_STEP}]`,
   );
 
   const D = 20000;
@@ -152,12 +148,13 @@ test("wall: a 200 m ridge casts a shadow of known depth", () => {
   const angleAtDistance = (distance) =>
     (WALL_HEIGHT - distance * distance / (2 * Re) - h) / distance;
 
-  // Query samples every 30 m, so the first sample on the plateau lies between Dw and Dw+30;
-  // its angle (and therefore the hidden depth) falls between the values at those distances.
+  // The first pixel centre with full height lies between Dw and Dw + one pixel, and the
+  // first 30 m query sample on it follows within another step. Because the sightline angle
+  // falls with distance, the hidden depth lies between the values at those two bounds.
+  const hiddenAtFirstPlateau = D * (angleAtDistance(Dw + WALL_PIXEL_METRES + QUERY_STEP) - angT);
   const hiddenAtWall = D * (angleAtDistance(Dw) - angT);
-  const hiddenAtNextSample = D * (angleAtDistance(Dw + QUERY_STEP) - angT);
-  const lowerBound = Math.min(hiddenAtWall, hiddenAtNextSample);
-  const upperBound = Math.max(hiddenAtWall, hiddenAtNextSample);
+  const lowerBound = Math.min(hiddenAtFirstPlateau, hiddenAtWall);
+  const upperBound = Math.max(hiddenAtFirstPlateau, hiddenAtWall);
   const far = runQuery(wallWorker, {
     lat: observer.lat,
     lon: longitudeEastOf(observer.lat, observer.lon, D),
@@ -175,9 +172,16 @@ test("wall: a 200 m ridge casts a shadow of known depth", () => {
   assert.equal(near.hidden, 0);
 });
 
-test("edge flag is set when rays leave the loaded region", () => {
-  // Edge detection is per ray; 64 rays already include the northern one that leaves the region.
-  const outside = runView(flatWorker, { lat: 51.9, lon: 8, h: 10, k: 0, rmax: 200000, rays: 64 });
+test("edge flag is set when rays leave the loaded tiles", () => {
+  // Withhold every tile north of the observer's tile: the northern rays leave the loaded
+  // block even though the observer himself stands on loaded ground.
+  const direction = { lat: 50, lon: 8, rmax: 100000 };
+  const z = zoomFor(direction.lat);
+  const observerTileY = Math.floor(mercatorPixelY(direction.lat, z) / 256);
+  const edgeWorker = startWorker();
+  loadTerrain(edgeWorker, direction, undefined, (key) => Number(key.split("/")[2]) < observerTileY);
+
+  const outside = runView(edgeWorker, { lat: 50, lon: 8, h: 10, k: 0, rmax: 100000, rays: 64 });
   assert.equal(outside.edge, true);
   const inside = runView(flatWorker, { lat: 50, lon: 8, h: 10, k: 0, rmax: 50000, rays: 64 });
   assert.equal(inside.edge, false);
