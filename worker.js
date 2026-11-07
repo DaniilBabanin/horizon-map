@@ -14,6 +14,10 @@ const MAX_PIXEL_METRES = 110;
 // 50° N, about SRTM 1") and recover most of that loss. Five kilometres is the range in
 // which near ridges and summits dominate the horizon angle; the finer block stays a
 // handful of tiles (at most about 16 at the equator), so the extra fetch stays small.
+// Going finer than +2 gains nothing: Terrarium heights at the summit point, z12/z13/z14/z15
+// (2026-11-07, bilinear): Feldberg 874.5/875.6/875.5/875.6 m, Zugspitze 2937.6/2941.4/
+// 2941.2/2941.7 m, Matterhorn 4300.3/4301.2/4301.1/4300.8 m (real 880/2962/4478). The
+// source is ~30 m data upsampled; the remaining gap is in the data, not the zoom.
 const FINE_RADIUS = 5000;
 const FINE_ZOOM_STEP = 2;
 const MAX_FINE_ZOOM = 15;
