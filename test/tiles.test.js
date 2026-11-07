@@ -11,6 +11,9 @@ const { loadWorker, loadTerrain } = require("./harness.js");
 const R = 6371008.8;
 const RAD = Math.PI / 180;
 const TILE_SIDE = 256;
+// The worker's near-field block: a disc of this radius at two zooms finer.
+const FINE_RADIUS = 5000;
+const FINE_ZOOM_STEP = 2;
 
 let messageId = 0;
 let prepareId = 0;
@@ -18,6 +21,10 @@ let prepareId = 0;
 // Same zoom rule as the worker: a pixel is at most 110 m wide at the observer's latitude.
 function zoomFor(lat) {
   return Math.min(15, Math.max(0, Math.ceil(Math.log2(156543.03 * Math.cos(lat * RAD) / 110))));
+}
+
+function fineZoomFor(coarseZoom) {
+  return Math.min(15, coarseZoom + FINE_ZOOM_STEP);
 }
 
 function mercatorPixelY(lat, z) {
@@ -65,6 +72,16 @@ function boundingBoxTileCount({ lat, lon, rmax }, z) {
   return (tileX1 - tileX0 + 1) * (tileY1 - tileY0 + 1);
 }
 
+// prepare counts the coarse disc plus the near-field disc the worker adds at two zooms
+// finer, covering min(rmax, FINE_RADIUS).
+function expectedTotal({ lat, lon, rmax }) {
+  const coarse = zoomFor(lat);
+  const fine = fineZoomFor(coarse);
+  const fineRadius = Math.min(rmax, FINE_RADIUS);
+  return boundingBoxTileCount({ lat, lon, rmax }, coarse)
+    + boundingBoxTileCount({ lat, lon, rmax: fineRadius }, fine);
+}
+
 test("prepare at 50 N 8 E asks for the disc's z10 tiles", () => {
   const worker = startWorker();
   const request = { lat: 50, lon: 8, rmax: 100000 };
@@ -72,11 +89,12 @@ test("prepare at 50 N 8 E asks for the disc's z10 tiles", () => {
 
   assert.equal(need.z, 10);
   assert.ok(need.keys.includes("10/534/346"), "need.keys lacks 10/534/346");
-  assert.equal(need.total, boundingBoxTileCount(request, need.z));
-  // No tiles are held yet, so every tile of the block is requested.
+  assert.equal(need.total, expectedTotal(request));
+  // No tiles are held yet, so every tile of both blocks is requested.
   assert.equal(need.keys.length, need.total);
   for (const key of need.keys) {
-    assert.match(key, /^10\/\d+\/\d+$/);
+    const keyZoom = Number(key.split("/")[0]);
+    assert.ok(keyZoom === need.z || keyZoom === fineZoomFor(need.z), `key ${key} has an unexpected zoom`);
   }
 });
 
@@ -93,13 +111,14 @@ test("zoomFor picks a zoom where a pixel is at most 110 m wide", () => {
 
 test("tile seam: bilinear interpolation crosses tile edges", () => {
   // At z7 the whole Mercator world is 32768 pixels wide, so a height of twice the global
-  // pixel x stays inside Int16; the ramp is then exact at every pixel centre.
+  // pixel x stays inside Int16. Rounding keeps the ramp exact at the coarse pixel centres
+  // and at the z9 fine pixel centres the near-field query now samples.
   const observer = { lat: 85, lon: -5.63, rmax: 10000 };
   const worker = startWorker();
   const need = prepare(worker, observer);
   const z = need.z;
   assert.equal(z, 7);
-  const heightAt = (lat, lon) => 2 * mercatorPixelX(lon, z);
+  const heightAt = (lat, lon) => Math.round(2 * mercatorPixelX(lon, z));
 
   loadTerrain(worker, observer, heightAt);
   worker.send({ type: "view", id: ++messageId, lat: observer.lat, lon: observer.lon, h: 10, k: 0, rmax: 5000, rays: 64 });
@@ -128,8 +147,8 @@ test("prepare evicts tiles outside the disc when the store passes its limit", ()
   assert.deepEqual(firstNeed.evicted, []);
   assert.equal(firstNeed.total, first.keys.length);
 
-  // A second continent. 256 held tiles are below max(600, 2 * 441) = 882, so this
-  // prepare keeps them; the load then takes the store to 697 tiles.
+  // A second continent. The first load's tiles stay below the second prepare's
+  // max(600, 2 * total) limit, so nothing is evicted here.
   const secondPlace = { lat: 40, lon: -100, rmax: 150000 };
   const second = loadTerrain(worker, secondPlace);
   const secondNeed = worker.messages.filter((message) => message.type === "need").pop();
@@ -139,11 +158,11 @@ test("prepare evicts tiles outside the disc when the store passes its limit", ()
   const held = new Set([...first.keys, ...second.keys]);
   assert.ok(held.size > 600, `store of ${held.size} tiles is not over the 600-tile floor`);
 
-  // A one-tile disc elsewhere: store 697 > max(600, 2 * 1), so every held tile lies
-  // outside it and must be reported for the page to drop.
+  // A tiny disc elsewhere: the store is above max(600, 2 * small.total), so every held
+  // tile lies outside both of its blocks and must be reported for the page to drop.
   const smallPlace = { lat: 60, lon: 60, rmax: 1000 };
   const small = prepare(worker, smallPlace);
-  assert.equal(small.total, 1);
+  assert.equal(small.total, expectedTotal(smallPlace));
   assert.ok(Array.isArray(small.evicted), "need.evicted is not an array");
   assert.deepEqual([...small.evicted].sort(), [...held].sort());
 
