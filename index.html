@@ -246,6 +246,22 @@ canvas { display: block; width: 100%; height: 100%; }
   const MAX_TILE_FETCHES = 8;
   const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
   const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000 };
+  // Projects a [lon, lat] point with its longitude unwrapped to within ±180° of the observer,
+  // so a view across the antimeridian stays in one piece; x may then fall outside [0, W].
+  // d3.geoMercator wraps its input longitude into [-180, 180), so the world copies are added
+  // back after projection.
+  const wrapLon = (lon) => ((lon + 180) % 360 + 360) % 360 - 180;
+  const projNear = ([lon, lat]) => {
+    const unwrapped = lon + 360 * Math.round((state.lon - lon) / 360);
+    const wrapped = wrapLon(unwrapped);
+    const [x, y] = proj([wrapped, lat]);
+    return [x + Math.round((unwrapped - wrapped) / 360) * W, y];
+  };
+  // proj.invert gives a longitude outside [-180, 180] for x outside the world copy.
+  const invertNear = ([x, y]) => {
+    const ll = proj.invert([x, y]);
+    return ll ? [wrapLon(ll[0]), ll[1]] : null;
+  };
 
   const nf = (v, d = 0) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
   const km = (m) => { const k = m / 1000; return k < 10 ? nf(k, 2) : k < 100 ? nf(k, 1) : nf(k, 0); };
@@ -293,13 +309,15 @@ canvas { display: block; width: 100%; height: 100%; }
   }
   const toPath2D = (geo) => { const p = new Path2D(); d3.geoPath(proj, p)(geo); return p; };
   const toCity = ([n, c, la, lo, p]) => { const [x, y] = proj([lo, la]); return { n, c, la, lo, p, x, y, key: n.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase() }; };
-  Promise.all([fetch("data/world.json").then(r => r.json()), fetch("data/lakes.json").then(r => r.json())])
+  // Resolves true once the outlines are ready to rasterise, false if they failed to load.
+  const landOutlineReady = Promise.all([fetch("data/world.json").then(r => r.json()), fetch("data/lakes.json").then(r => r.json())])
     .then(([world, lakes]) => {
       landPath = toPath2D(fixWinding(topojson.feature(world, world.objects.land)));
       borderPath = toPath2D(topojson.mesh(world, world.objects.countries, (a, b) => a !== b));
       waterPath = toPath2D(fixWinding(topojson.feature(lakes, lakes.objects["map.geo"])));
       draw();
-    }).catch((e) => { console.error(e); dataError = "Map outlines failed to load. Reload the page to try again."; setStatus(dataError, true); });
+      return true;
+    }).catch((e) => { console.error(e); dataError = "Map outlines failed to load. Reload the page to try again."; setStatus(dataError, true); return false; });
   fetch("data/cities.json").then(r => r.json()).then(rows => {
     cities = rows.map(toCity);
     draw(); updateFarText(); runSearch();
@@ -322,6 +340,39 @@ canvas { display: block; width: 100%; height: 100%; }
   // Keys evicted while their bitmap was still decoding; the late shade is not stored.
   const evictedShadeKeys = new Set();
 
+  // Terrarium ocean tiles carry bathymetry: the sea floor, hundreds of metres below sea
+  // level. The viewshed treats heights as ground, so open water would sit below the horizon
+  // and never be visible. Clamp every pixel outside the land polygons that is below 0 up to
+  // 0. Land pixels keep their negative values (Dead Sea, Dutch polders, Death Valley) and
+  // heights at or above 0 are never touched.
+  const landRaster = document.createElement("canvas");
+  landRaster.width = TILE_SIDE; landRaster.height = TILE_SIDE;
+  const landRasterCtx = landRaster.getContext("2d", { willReadFrequently: true });
+  // A pixel at least half covered by land counts as land, so the antialiased rim of a
+  // coastline does not keep a strip of bathymetry.
+  const LAND_COVER_ALPHA = 128;
+  function clampSeaLevel(key, data) {
+    const [z, x, y] = key.split("/").map(Number);
+    const side = W / 2 ** z;
+    const tileX = x * side, tileY = y * side;
+    const scale = TILE_SIDE / side;
+    landRasterCtx.setTransform(1, 0, 0, 1, 0, 0);
+    landRasterCtx.clearRect(0, 0, TILE_SIDE, TILE_SIDE);
+    landRasterCtx.fillStyle = "#fff";
+    // A tile next to ±180° also needs the land that wraps in from the other side.
+    const copies = [0];
+    if (tileX <= 0) copies.push(-W);
+    if (tileX + side >= W) copies.push(W);
+    for (const offset of copies) {
+      landRasterCtx.setTransform(scale, 0, 0, scale, (offset - tileX) * scale, -tileY * scale);
+      landRasterCtx.fill(landPath);
+    }
+    const alpha = landRasterCtx.getImageData(0, 0, TILE_SIDE, TILE_SIDE).data;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] < 0 && alpha[i * 4 + 3] < LAND_COVER_ALPHA) data[i] = 0;
+    }
+  }
+
   // One Terrarium tile as Int16 metres: R*256 + G + B/256 - 32768, rounded. A black pixel
   // decodes to -32768, the worker's "no data" marker.
   async function fetchTile(key) {
@@ -338,6 +389,9 @@ canvas { display: block; width: 100%; height: 100%; }
       const h = Math.round(px[i * 4] * 256 + px[i * 4 + 1] + px[i * 4 + 2] / 256 - 32768);
       data[i] = Math.max(-32768, Math.min(32767, h));
     }
+    // Tiles wait for the outlines so every ocean pixel can be classified. If the outlines
+    // failed, the tile is posted unchanged and the map's red status explains why.
+    if (await landOutlineReady) clampSeaLevel(key, data);
     return data;
   }
 
@@ -397,7 +451,7 @@ canvas { display: block; width: 100%; height: 100%; }
       if (m.error) { setStatus("No terrain data at this spot.", true); return; }
       view = m;
       view.sx = new Float32Array(m.A); view.sy = new Float32Array(m.A);
-      for (let a = 0; a < m.A; a++) { const [x, y] = proj([m.skyLon[a], m.skyLat[a]]); view.sx[a] = x; view.sy[a] = y; }
+      for (let a = 0; a < m.A; a++) { const [x, y] = projNear([m.skyLon[a], m.skyLat[a]]); view.sx[a] = x; view.sy[a] = y; }
       maskCanvas = document.createElement("canvas"); maskCanvas.width = m.pw; maskCanvas.height = m.ph;
       const id = new ImageData(m.pw, m.ph);
       for (let i = 0; i < m.mask.length; i++) { id.data[i * 4 + 3] = m.mask[i]; id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; }
@@ -465,6 +519,28 @@ canvas { display: block; width: 100%; height: 100%; }
   }
   new ResizeObserver(resize).observe(wrap);
   const circleGeo = (m) => d3.geoCircle().center([state.lon, state.lat]).radius(Math.min(179, m / R / RAD)).precision(0.2)();
+  // d3.geoPath clips polygons at ±180°, so a small circle across the antimeridian would
+  // span the whole world. Project its ring directly, unwrapped around the observer.
+  function ringBounds(geo) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const ring of geo.coordinates) for (const point of ring) {
+      const [x, y] = projNear(point);
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    return [[x0, y0], [x1, y1]];
+  }
+  function ringPath(geo) {
+    const path = new Path2D();
+    for (const ring of geo.coordinates) {
+      for (let i = 0; i < ring.length; i++) {
+        const [x, y] = projNear(ring[i]);
+        if (i) path.lineTo(x, y); else path.moveTo(x, y);
+      }
+      path.closePath();
+    }
+    return path;
+  }
   function fitRadius() {
     if (!view) return Math.max(state.rmax, flatHorizon(state.h));
     const sd = Array.from(view.skyDist).sort((a, b) => a - b);
@@ -472,7 +548,7 @@ canvas { display: block; width: 100%; height: 100%; }
   }
   function fit(animate = true) {
     if (!cw) return;
-    const [[x0, y0], [x1, y1]] = d3.geoPath(proj).bounds(circleGeo(fitRadius() * 1.05));
+    const [[x0, y0], [x1, y1]] = ringBounds(circleGeo(fitRadius() * 1.05));
     const k = Math.min(cw / (x1 - x0), ch / (y1 - y0)) * 0.95;
     const t = d3.zoomIdentity.translate(cw / 2, ch / 2).scale(k).translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
     (animate ? sel.transition().duration(600) : sel).call(zoom.transform, t);
@@ -480,20 +556,43 @@ canvas { display: block; width: 100%; height: 100%; }
 
   let raf = 0;
   function draw() { if (!raf) raf = requestAnimationFrame(render); }
+  // x offsets of the world copies (0 and ±W) that intersect the visible viewport, so the
+  // base map continues across the ±180° seam. A view inside [0, W] gets only offset 0.
+  function visibleWorldCopies(worldX0, worldX1) {
+    const offsets = [];
+    for (let copy = Math.floor(worldX0 / W) - 1; copy <= Math.ceil(worldX1 / W); copy++) {
+      if (copy * W < worldX1 && (copy + 1) * W > worldX0) offsets.push(copy * W);
+    }
+    return offsets;
+  }
   function render() {
     raf = 0; if (!cw) return;
     const k = T.k;
+    const [observerX, observerY] = projNear([state.lon, state.lat]);
+    const copies = visibleWorldCopies(-T.x / k, (cw - T.x) / k);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = colors.sea; ctx.fillRect(0, 0, cw, ch);
     ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * T.x, dpr * T.y);
-    if (landPath) { ctx.fillStyle = colors.land; ctx.fill(landPath); }
+    if (landPath) {
+      ctx.fillStyle = colors.land;
+      for (const offset of copies) { ctx.save(); ctx.translate(offset, 0); ctx.fill(landPath); ctx.restore(); }
+    }
     ctx.imageSmoothingEnabled = true;
     for (const s of shadeImages.values()) {
       const side = W / 2 ** s.z;
-      ctx.drawImage(s.img, s.x * side, s.y * side, side, side);
+      const centerX = (s.x + 0.5) * side;
+      const tileX = centerX - side / 2 + Math.round((observerX - centerX) / W) * W;
+      ctx.drawImage(s.img, tileX, s.y * side, side, side);
     }
-    if (waterPath) { ctx.fillStyle = colors.water; ctx.fill(waterPath); }
-    if (borderPath) { ctx.strokeStyle = colors.border; ctx.lineWidth = 1 / k; ctx.setLineDash([4 / k, 3 / k]); ctx.stroke(borderPath); ctx.setLineDash([]); }
+    if (waterPath) {
+      ctx.fillStyle = colors.water;
+      for (const offset of copies) { ctx.save(); ctx.translate(offset, 0); ctx.fill(waterPath); ctx.restore(); }
+    }
+    if (borderPath) {
+      ctx.strokeStyle = colors.border; ctx.lineWidth = 1 / k; ctx.setLineDash([4 / k, 3 / k]);
+      for (const offset of copies) { ctx.save(); ctx.translate(offset, 0); ctx.stroke(borderPath); ctx.restore(); }
+      ctx.setLineDash([]);
+    }
     if (view && tinted) {
       const [x0, y0, x1, y1] = view.bbox;
       ctx.imageSmoothingEnabled = k * (x1 - x0) / tinted.width < 3;
@@ -501,8 +600,8 @@ canvas { display: block; width: 100%; height: 100%; }
       ctx.imageSmoothingEnabled = true;
     }
     ctx.strokeStyle = colors.ring; ctx.lineWidth = 1.4 / k; ctx.setLineDash([6 / k, 5 / k]);
-    ctx.stroke(toPath2D(circleGeo(flatHorizon(state.h)))); ctx.setLineDash([]);
-    ctx.strokeStyle = colors.muted; ctx.lineWidth = 0.8 / k; ctx.stroke(toPath2D(circleGeo(state.rmax)));
+    ctx.stroke(ringPath(circleGeo(flatHorizon(state.h)))); ctx.setLineDash([]);
+    ctx.strokeStyle = colors.muted; ctx.lineWidth = 0.8 / k; ctx.stroke(ringPath(circleGeo(state.rmax)));
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (view) {
@@ -514,10 +613,9 @@ canvas { display: block; width: 100%; height: 100%; }
         ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
       }
     }
-    drawCities(k);
-    const [ox, oy] = proj([state.lon, state.lat]);
-    marker(ox * k + T.x, oy * k + T.y, colors.horizon, 6);
-    if (hoverPt) { const [hx, hy] = proj(hoverPt); marker(hx * k + T.x, hy * k + T.y, colors.ink, 4); }
+    drawCities(k, copies);
+    marker(observerX * k + T.x, observerY * k + T.y, colors.horizon, 6);
+    if (hoverPt) { const [hx, hy] = projNear(hoverPt); marker(hx * k + T.x, hy * k + T.y, colors.ink, 4); }
     drawScale(k);
   }
   function marker(sx, sy, col, r) {
@@ -528,7 +626,7 @@ canvas { display: block; width: 100%; height: 100%; }
     ctx.beginPath(); ctx.moveTo(sx - b, sy); ctx.lineTo(sx - a, sy); ctx.moveTo(sx + a, sy); ctx.lineTo(sx + b, sy);
     ctx.moveTo(sx, sy - b); ctx.lineTo(sx, sy - a); ctx.moveTo(sx, sy + a); ctx.lineTo(sx, sy + b); ctx.stroke();
   }
-  function drawCities(k) {
+  function drawCities(k, copies) {
     if (!cities.length) return;
     const kmPerPx = 40075 / (W * k);
     const minPop = kmPerPx > 20 ? 2e6 : kmPerPx > 8 ? 5e5 : kmPerPx > 3 ? 1.5e5 : kmPerPx > 1 ? 4e4 : kmPerPx > 0.35 ? 1.2e4 : 5000;
@@ -538,18 +636,20 @@ canvas { display: block; width: 100%; height: 100%; }
     let shown = 0;
     for (const c of cities) {
       if (c.p < minPop) break;
-      const x = c.x * k + T.x, y = c.y * k + T.y;
-      if (x < -40 || y < -20 || x > cw + 40 || y > ch + 20) continue;
-      const w = ctx.measureText(c.n).width;
-      const gx0 = Math.floor((x - 4) / 26), gx1 = Math.floor((x + w + 10) / 26), gy = Math.floor(y / 18);
-      let hit = false;
-      for (let gx = gx0; gx <= gx1 && !hit; gx++) if (occ.has(gx + "," + gy)) hit = true;
-      if (hit) continue;
-      for (let gx = gx0; gx <= gx1; gx++) occ.add(gx + "," + gy);
-      ctx.fillStyle = colors.ink; ctx.beginPath(); ctx.arc(x, y, c.p > 1e6 ? 3 : 2.2, 0, 2 * Math.PI); ctx.fill();
-      ctx.lineWidth = 3; ctx.strokeStyle = colors.halo; ctx.strokeText(c.n, x + 6, y);
-      ctx.fillStyle = colors.ink; ctx.fillText(c.n, x + 6, y);
-      if (++shown > 200) break;
+      for (const offset of copies) {
+        const x = (c.x + offset) * k + T.x, y = c.y * k + T.y;
+        if (x < -40 || y < -20 || x > cw + 40 || y > ch + 20) continue;
+        const w = ctx.measureText(c.n).width;
+        const gx0 = Math.floor((x - 4) / 26), gx1 = Math.floor((x + w + 10) / 26), gy = Math.floor(y / 18);
+        let hit = false;
+        for (let gx = gx0; gx <= gx1 && !hit; gx++) if (occ.has(gx + "," + gy)) hit = true;
+        if (hit) continue;
+        for (let gx = gx0; gx <= gx1; gx++) occ.add(gx + "," + gy);
+        ctx.fillStyle = colors.ink; ctx.beginPath(); ctx.arc(x, y, c.p > 1e6 ? 3 : 2.2, 0, 2 * Math.PI); ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = colors.halo; ctx.strokeText(c.n, x + 6, y);
+        ctx.fillStyle = colors.ink; ctx.fillText(c.n, x + 6, y);
+        if (++shown > 200) return;
+      }
     }
   }
   function drawScale(k) {
@@ -708,8 +808,8 @@ canvas { display: block; width: 100%; height: 100%; }
   const tip = $("tip");
   let lastQ = 0;
   function queryAt(px, py) {
-    const ll = proj.invert(T.invert([px, py]));
-    if (!ll) return;
+    const ll = invertNear(T.invert([px, py]));
+    if (!ll || !isFinite(ll[0]) || !isFinite(ll[1])) return;
     const id = ++qid;
     pending.set(id, (m) => {
       if (id !== qid) return;
@@ -742,8 +842,8 @@ canvas { display: block; width: 100%; height: 100%; }
   canvas.addEventListener("click", (e) => {
     if (longPressFired) { longPressFired = false; return; }
     const r = canvas.getBoundingClientRect();
-    const ll = proj.invert(T.invert([e.clientX - r.left, e.clientY - r.top]));
-    if (ll && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
+    const ll = invertNear(T.invert([e.clientX - r.left, e.clientY - r.top]));
+    if (ll && isFinite(ll[0]) && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
   });
   canvas.addEventListener("pointerdown", (e) => {
     pointerKind = e.pointerType;
