@@ -65,6 +65,13 @@ node --test
 
 Each script's header has the exact command.
 
+## Privacy
+
+No accounts, cookies, analytics or server-side code. The browser loads files from GitHub Pages
+(through Cloudflare), terrain tiles from Amazon S3, and OpenStreetMap tiles only when the overlay
+is switched on. Details: [privacy notice](https://horizon-map.babanin.de/privacy.html) (English and
+German). Imprint: https://babanin.de/imprint.html.
+
 ## Licence
 
 The code is MIT licensed, see [LICENSE](LICENSE). The data files keep their own licences (table

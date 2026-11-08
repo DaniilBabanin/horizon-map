@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy · Horizon Finder</title>
+<link rel="stylesheet" href="vendor/fonts.css">
+<style>
+:root {
+  --ink: #1d2a30; --muted: #5a6a70; --panel: #f7f8f5; --rule: #d6dcd8; --link: #b0207a;
+  --f-display: "Saira Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e3eaec; --muted: #93a4aa; --panel: #121c22; --rule: #26343b; --link: #ff5cb8; color-scheme: dark; }
+}
+body { margin: 0; background: var(--panel); color: var(--ink); font: 15px/1.55 var(--f-body); }
+main { max-width: 72ch; margin: 0 auto; padding: 24px 16px 48px; }
+h1, h2 { font-family: var(--f-display); font-weight: 600; line-height: 1.2; }
+h1 { font-size: 30px; margin: 8px 0 4px; }
+h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--rule); }
+h3 { font-size: 15px; margin: 20px 0 4px; }
+p, ul { margin: 0 0 10px; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: 13px; }
+nav { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+<nav><a href="./">← Horizon Finder</a><a href="#en">English</a><a href="#de" hreflang="de">Deutsch</a><a href="https://babanin.de/imprint.html">Imprint / Impressum</a></nav>
+
+<section id="en" lang="en">
+<h1>Privacy notice</h1>
+<p class="meta">Last updated 8 November 2026</p>
+
+<h3>Who is responsible</h3>
+<p>Controller under the GDPR: Daniil Babanin. Postal address and contact: see the <a href="https://babanin.de/imprint.html">imprint</a>.</p>
+
+<h3>In short</h3>
+<p>Horizon Finder runs entirely in your browser. It has no user accounts, no cookies, no analytics, no advertising and no server-side code of its own. Your browser does contact the services listed below to load the page and map data; they see your IP address and which files were requested.</p>
+
+<h3>Hosting: GitHub Pages and Cloudflare</h3>
+<p>The site's files (page, scripts, fonts, town and peak data) are hosted on GitHub Pages (GitHub, Inc., USA) and delivered through Cloudflare (Cloudflare, Inc., USA), which acts as a content delivery network and protects the site against attacks. When you open the site, these providers process your IP address, the time, the requested files, the referring page and your browser's user agent, and keep this in server logs for security and operation. Peak data are loaded in 2° × 2° tiles around the place you look at, so the requested file names reveal the approximate area.</p>
+<p>Legal basis: Art. 6(1)(f) GDPR (legitimate interest in delivering the site securely and reliably). Both providers are based in the USA; where a provider is certified under the EU-U.S. Data Privacy Framework, transfers rely on the Commission's adequacy decision of 10 July 2023, otherwise on standard contractual clauses. Details: <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub privacy statement</a>, <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare privacy policy</a>.</p>
+
+<h3>Terrain tiles: Amazon Web Services</h3>
+<p>To compute what you can see, your browser downloads elevation tiles (Mapzen Terrain Tiles, part of the AWS Open Data programme) directly from Amazon S3 (Amazon Web Services, Inc., USA). Amazon receives your IP address and the tile addresses, which reveal the approximate area you are looking at. Without these tiles the tool cannot work. Legal basis: Art. 6(1)(f) GDPR. Transfers to the USA as described above. Details: <a href="https://aws.amazon.com/privacy/">AWS privacy notice</a>.</p>
+
+<h3>Map overlay: OpenStreetMap (only when you switch it on)</h3>
+<p>The OpenStreetMap overlay is off by default. Only when you move its slider above 0 % does your browser load map tiles from tile.openstreetmap.org (OpenStreetMap Foundation, United Kingdom). The OpenStreetMap Foundation then receives your IP address, the tile addresses (the area shown), your user agent and this site's address as the referrer, which its tile usage policy requires. Legal basis: Art. 6(1)(a) GDPR (you switch it on) and Art. 6(1)(f) GDPR. Details: <a href="https://osmfoundation.org/wiki/Privacy_Policy">OSMF privacy policy</a>.</p>
+
+<h3>Your device location</h3>
+<p>"Use my location" asks your browser for your position, and only after you click it; your browser asks for permission first. The position is used in your browser only and is never sent to this site. Placing the observer there does make your browser load the terrain and peak data for that area (see above), so those providers can infer the approximate area. Legal basis: Art. 6(1)(a) GDPR (your click and the browser permission, which you can withdraw in your browser settings at any time).</p>
+
+<h3>Stored in your browser</h3>
+<p>The site stores your last view and settings (position, heights, refraction, range, peak-name language, highlight colour, overlay strength) in your browser's local storage under the key <code>horizon-v3</code>, so the tool opens where you left it. This data never leaves your device. Storing it is strictly necessary for a function you asked for (§ 25(2) no. 2 TDDDG), so no consent banner is needed. You can delete it by clearing this site's data in your browser. The current view is also written into the address bar (after <code>#</code>); that part of the address is not sent to any server, but it is included when you share the link.</p>
+
+<h3>Your rights</h3>
+<p>You have the right to access (Art. 15 GDPR), rectification (Art. 16), erasure (Art. 17), restriction of processing (Art. 18), data portability (Art. 20) and to object to processing based on legitimate interests (Art. 21). Where processing is based on consent, you can withdraw it at any time with effect for the future. This site itself stores no personal data about you; for the providers' logs, contact them directly or write to the address in the imprint. You also have the right to lodge a complaint with a supervisory authority, for example <a href="https://datenschutz.hessen.de/">Der Hessische Beauftragte für Datenschutz und Informationsfreiheit</a>.</p>
+<p>There is no automated decision-making or profiling.</p>
+</section>
+
+<section id="de" lang="de">
+<h2>Datenschutzerklärung</h2>
+<p class="meta">Stand: 8. November 2026</p>
+
+<h3>Verantwortlicher</h3>
+<p>Verantwortlicher im Sinne der DSGVO: Daniil Babanin. Anschrift und Kontakt: siehe <a href="https://babanin.de/imprint.html">Impressum</a>.</p>
+
+<h3>Kurz gesagt</h3>
+<p>Horizon Finder läuft vollständig in Ihrem Browser. Es gibt keine Benutzerkonten, keine Cookies, keine Analyse- oder Werbedienste und keinen eigenen serverseitigen Code. Ihr Browser ruft jedoch die unten genannten Dienste auf, um die Seite und die Kartendaten zu laden; diese sehen Ihre IP-Adresse und welche Dateien abgerufen werden.</p>
+
+<h3>Hosting: GitHub Pages und Cloudflare</h3>
+<p>Die Dateien der Seite (Seite, Skripte, Schriften, Orts- und Gipfeldaten) liegen bei GitHub Pages (GitHub, Inc., USA) und werden über Cloudflare (Cloudflare, Inc., USA) ausgeliefert, das als Content-Delivery-Netzwerk dient und die Seite vor Angriffen schützt. Beim Aufruf verarbeiten diese Anbieter Ihre IP-Adresse, Zeitpunkt, abgerufene Dateien, die verweisende Seite und die Browserkennung und speichern diese in Server-Logs für Sicherheit und Betrieb. Gipfeldaten werden in 2° × 2°-Kacheln rund um den betrachteten Ort geladen; die abgerufenen Dateinamen lassen daher auf das ungefähre Gebiet schließen.</p>
+<p>Rechtsgrundlage: Art. 6 Abs. 1 lit. f DSGVO (berechtigtes Interesse an einer sicheren und zuverlässigen Bereitstellung der Seite). Beide Anbieter sitzen in den USA; soweit ein Anbieter nach dem EU-US Data Privacy Framework zertifiziert ist, stützt sich die Übermittlung auf den Angemessenheitsbeschluss der Kommission vom 10. Juli 2023, andernfalls auf Standardvertragsklauseln. Einzelheiten: <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">Datenschutzerklärung von GitHub</a>, <a href="https://www.cloudflare.com/privacypolicy/">Datenschutzerklärung von Cloudflare</a>.</p>
+
+<h3>Geländedaten: Amazon Web Services</h3>
+<p>Um zu berechnen, was Sie sehen können, lädt Ihr Browser Höhenkacheln (Mapzen Terrain Tiles aus dem AWS-Open-Data-Programm) direkt von Amazon S3 (Amazon Web Services, Inc., USA). Amazon erhält dabei Ihre IP-Adresse und die Kacheladressen, die auf das ungefähre betrachtete Gebiet schließen lassen. Ohne diese Kacheln funktioniert das Werkzeug nicht. Rechtsgrundlage: Art. 6 Abs. 1 lit. f DSGVO. Übermittlung in die USA wie oben beschrieben. Einzelheiten: <a href="https://aws.amazon.com/privacy/">Datenschutzhinweis von AWS</a>.</p>
+
+<h3>Kartenüberlagerung: OpenStreetMap (nur wenn Sie sie einschalten)</h3>
+<p>Die OpenStreetMap-Überlagerung ist standardmäßig aus. Erst wenn Sie ihren Regler über 0 % stellen, lädt Ihr Browser Kartenkacheln von tile.openstreetmap.org (OpenStreetMap Foundation, Vereinigtes Königreich). Die OpenStreetMap Foundation erhält dann Ihre IP-Adresse, die Kacheladressen (das angezeigte Gebiet), die Browserkennung und die Adresse dieser Seite als Referrer, den ihre Nutzungsrichtlinie für Kacheln verlangt. Rechtsgrundlage: Art. 6 Abs. 1 lit. a DSGVO (Sie schalten sie ein) und Art. 6 Abs. 1 lit. f DSGVO. Einzelheiten: <a href="https://osmfoundation.org/wiki/Privacy_Policy">Datenschutzerklärung der OSMF</a>.</p>
+
+<h3>Ihr Gerätestandort</h3>
+<p>„Use my location“ fragt Ihren Standort beim Browser ab, und zwar nur nach Ihrem Klick; der Browser bittet Sie vorher um Erlaubnis. Der Standort wird nur in Ihrem Browser verwendet und nie an diese Seite übertragen. Wird der Beobachter dorthin gesetzt, lädt Ihr Browser allerdings die Gelände- und Gipfeldaten für dieses Gebiet (siehe oben), sodass diese Anbieter auf das ungefähre Gebiet schließen können. Rechtsgrundlage: Art. 6 Abs. 1 lit. a DSGVO (Ihr Klick und die Browser-Erlaubnis, die Sie jederzeit in den Browsereinstellungen widerrufen können).</p>
+
+<h3>Speicherung in Ihrem Browser</h3>
+<p>Die Seite speichert Ihre letzte Ansicht und Einstellungen (Position, Höhen, Refraktion, Reichweite, Sprache der Gipfelnamen, Hervorhebungsfarbe, Stärke der Überlagerung) im lokalen Speicher Ihres Browsers unter dem Schlüssel <code>horizon-v3</code>, damit das Werkzeug dort weitermacht, wo Sie aufgehört haben. Diese Daten verlassen Ihr Gerät nie. Die Speicherung ist für eine von Ihnen gewünschte Funktion unbedingt erforderlich (§ 25 Abs. 2 Nr. 2 TDDDG); eine Einwilligung ist daher nicht nötig. Sie können die Daten löschen, indem Sie die Websitedaten dieser Seite in Ihrem Browser löschen. Die aktuelle Ansicht steht außerdem in der Adresszeile (nach <code>#</code>); dieser Teil der Adresse wird an keinen Server gesendet, ist aber enthalten, wenn Sie den Link teilen.</p>
+
+<h3>Ihre Rechte</h3>
+<p>Sie haben das Recht auf Auskunft (Art. 15 DSGVO), Berichtigung (Art. 16), Löschung (Art. 17), Einschränkung der Verarbeitung (Art. 18), Datenübertragbarkeit (Art. 20) und Widerspruch gegen Verarbeitungen auf Grundlage berechtigter Interessen (Art. 21). Eine Einwilligung können Sie jederzeit mit Wirkung für die Zukunft widerrufen. Diese Seite selbst speichert keine personenbezogenen Daten über Sie; zu den Logs der Anbieter wenden Sie sich direkt an diese oder an die Anschrift im Impressum. Außerdem haben Sie das Recht, sich bei einer Aufsichtsbehörde zu beschweren, zum Beispiel beim <a href="https://datenschutz.hessen.de/">Hessischen Beauftragten für Datenschutz und Informationsfreiheit</a>.</p>
+<p>Eine automatisierte Entscheidungsfindung oder ein Profiling findet nicht statt.</p>
+</section>
+</main>
+</body>
+</html>
