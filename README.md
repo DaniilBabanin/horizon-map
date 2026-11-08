@@ -19,6 +19,7 @@ and a 360° panorama of it with named peaks.
 - Panorama: the skyline in every direction with OSM peak names (local or English); hover it (or
   slide a finger along it) to see which ridge forms the skyline and how far away it is.
 - Highlight colour: magenta, green, or the colour-blind-safe orange and blue.
+- OpenStreetMap overlay on the terrain with an opacity slider (0 % = off, no tile requests).
 - The view is stored in the URL, so a link reproduces it.
 
 ## How it works
@@ -59,6 +60,7 @@ node --test
 | `data/lakes.json` | [Natural Earth](https://www.naturalearthdata.com/) 1:10m lakes 4.1.0 | public domain | `scripts/build_outlines.sh` |
 | `data/cities*.json` | [GeoNames](https://www.geonames.org/) cities1000 | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | `scripts/build_cities.py` |
 | `data/peaks/` | [OpenStreetMap](https://www.openstreetmap.org/) `natural=peak` | [ODbL](https://opendatacommons.org/licenses/odbl/), © OpenStreetMap contributors | `scripts/build_peaks.sh` |
+| map overlay (fetched at runtime, off by default) | [OpenStreetMap](https://www.openstreetmap.org/) standard tiles | © OpenStreetMap contributors, [tile usage policy](https://operations.osmfoundation.org/policies/tiles/) | – |
 | terrain (fetched at runtime) | [Mapzen Terrain Tiles](https://github.com/tilezen/joerd/blob/master/docs/attribution.md) on AWS | see the attribution page | – |
 
 Each script's header has the exact command.
