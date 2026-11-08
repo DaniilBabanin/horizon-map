@@ -80,6 +80,9 @@ input[type="text"] { font-family: var(--f-body); width: 100%; }
 input[type="number"] { width: 120px; }
 input:focus-visible, button:focus-visible, select:focus-visible { outline: 2px solid var(--horizon); outline-offset: 1px; }
 input[type="range"] { width: 100%; accent-color: var(--horizon); }
+.osm-row { flex-wrap: nowrap; }
+.osm-row input[type="range"] { flex: 1 1 auto; width: auto; min-width: 0; }
+.osm-row .unit { flex: none; min-width: 3.5ch; text-align: right; font-variant-numeric: tabular-nums; }
 .unit { font-family: var(--f-mono); color: var(--muted); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
@@ -245,6 +248,14 @@ canvas { display: block; width: 100%; height: 100%; }
       </select>
     </div>
 
+    <div class="group">
+      <label class="label" for="osm">OpenStreetMap overlay</label>
+      <div class="row osm-row">
+        <input type="range" id="osm" min="0" max="100" step="5" value="0">
+        <span class="unit" id="osmVal">0 %</span>
+      </div>
+    </div>
+
     <div class="note">
       <p>Hover the map to check any spot (on a touch screen: tap to check, long-press to stand there): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama (or slide a finger along it) to find which ridge forms the skyline in that direction.</p>
       <p>Terrain is AWS Terrain Tiles (Mapzen Terrarium: SRTM and other sources, about 100 m per pixel), worldwide between 85° S and 85° N. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
@@ -281,7 +292,7 @@ canvas { display: block; width: 100%; height: 100%; }
   const TILE_SIDE = 256;
   const MAX_TILE_FETCHES = 8;
   const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
-  const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000, names: "local", highlight: "magenta" };
+  const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000, names: "local", highlight: "magenta", osm: 0 };
   const HIGHLIGHT_OPTIONS = ["magenta", "green", "orange", "blue"];
   // Projects a [lon, lat] point with its longitude unwrapped to within ±180° of the observer,
   // so a view across the antimeridian stays in one piece; x may then fall outside [0, W].
@@ -702,6 +713,115 @@ canvas { display: block; width: 100%; height: 100%; }
     }
     return offsets;
   }
+
+  // ---------- OSM overlay ----------
+  // Raster tiles from https://tile.openstreetmap.org/{z}/{x}/{y}.png (checked 2026-11-08:
+  // access-control-allow-origin: *, ~1 day cache). The map's .attrib line already credits
+  // OpenStreetMap; only the tiles of the current view are requested, so the browser's HTTP
+  // cache serves the repeats and nothing is prefetched.
+  const OSM_TILE_URL = "https://tile.openstreetmap.org/";
+  const OSM_TILE_SIDE = 256;
+  const OSM_MAX_ZOOM = 19;
+  const OSM_MAX_IN_FLIGHT = 6;
+  const OSM_CACHE_SIZE = 300;
+  // How far up the pyramid a still-loading tile may borrow a loaded ancestor.
+  const OSM_FALLBACK_LEVELS = 4;
+  const osmTiles = new Map();   // "z/x/y" -> {img}; the least recently drawn key is evicted
+  const osmLoading = new Set(); // keys with a request running
+  const osmFailed = new Set();  // keys that failed once, not retried this session
+  let osmQueue = [];            // visible missing tiles not started yet
+  let osmInFlight = 0, osmWarned = false;
+  const osmWrapX = (x, z) => ((x % 2 ** z) + 2 ** z) % 2 ** z;
+  const osmKey = (z, x, y) => z + "/" + osmWrapX(x, z) + "/" + y;
+  const osmZoom = (k) => Math.max(0, Math.min(OSM_MAX_ZOOM, Math.round(Math.log2(k * W / OSM_TILE_SIDE))));
+  // Visible tiles in unwrapped world columns (so the overlay crosses the dateline), rows
+  // clamped to the Mercator square. The zoom ignores dpr on purpose, to keep request counts low.
+  function osmVisibleTiles(k) {
+    const z = osmZoom(k);
+    const side = W / 2 ** z;
+    const tileRows = 2 ** z;
+    const colStart = Math.floor((-T.x / k) / side);
+    const colEnd = Math.ceil(((cw - T.x) / k) / side) - 1;
+    const rowStart = Math.max(0, Math.floor((-T.y / k) / side));
+    const rowEnd = Math.min(tileRows - 1, Math.ceil(((ch - T.y) / k) / side) - 1);
+    const tiles = [];
+    for (let row = rowStart; row <= rowEnd; row++) {
+      for (let col = colStart; col <= colEnd; col++) tiles.push({ z, x: col, y: row, key: osmKey(z, col, row) });
+    }
+    return { side, tiles };
+  }
+  // A cache hit moves to the end of the Map, so the first key is the least recently used.
+  function osmCached(key) {
+    const tile = osmTiles.get(key);
+    if (!tile) return null;
+    osmTiles.delete(key); osmTiles.set(key, tile);
+    return tile;
+  }
+  function drawOsmOverlay({ side, tiles }) {
+    ctx.globalAlpha = state.osm / 100;
+    for (const tile of tiles) {
+      const tileX = tile.x * side, tileY = tile.y * side;
+      const loaded = osmCached(tile.key);
+      if (loaded) { ctx.drawImage(loaded.img, tileX, tileY, side, side); continue; }
+      // While the tile loads, draw the matching sub-rectangle of the nearest loaded
+      // ancestor, clipped to this tile's square, so a zoom never flashes empty.
+      for (let up = 1; up <= OSM_FALLBACK_LEVELS && tile.z - up >= 0; up++) {
+        const ancestorSide = W / 2 ** (tile.z - up);
+        const ancestorX = Math.floor(tile.x / 2 ** up), ancestorY = Math.floor(tile.y / 2 ** up);
+        const ancestor = osmCached(osmKey(tile.z - up, ancestorX, ancestorY));
+        if (!ancestor) continue;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(tileX, tileY, side, side); ctx.clip();
+        ctx.drawImage(ancestor.img, ancestorX * ancestorSide, ancestorY * ancestorSide, ancestorSide, ancestorSide);
+        ctx.restore();
+        break;
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  // Every render replaces the queue of not-yet-started loads with what is visible now, so a
+  // pan away drops them instead of prefetching; the running requests finish on their own.
+  // New loads start only once the view has been still for OSM_SETTLE_MS: an animated zoom
+  // (the 600 ms "Fit view") otherwise requested tiles at every intermediate level (z2–z11
+  // seen in Fiji, 2026-11-08).
+  const OSM_SETTLE_MS = 150;
+  let osmSettleTimer = 0;
+  function requestOsmTiles(tiles) {
+    const missing = [];
+    for (const tile of tiles) {
+      if (osmTiles.has(tile.key) || osmLoading.has(tile.key) || osmFailed.has(tile.key)) continue;
+      missing.push(tile);
+    }
+    osmQueue = missing;
+    clearTimeout(osmSettleTimer);
+    if (missing.length) osmSettleTimer = setTimeout(loadOsmQueue, OSM_SETTLE_MS);
+  }
+  function loadOsmQueue() {
+    if (state.osm === 0) return;
+    while (osmInFlight < OSM_MAX_IN_FLIGHT && osmQueue.length) {
+      const tile = osmQueue.shift();
+      if (osmTiles.has(tile.key) || osmLoading.has(tile.key) || osmFailed.has(tile.key)) continue;
+      osmLoading.add(tile.key);
+      osmInFlight++;
+      const image = new Image();
+      // OSM sends access-control-allow-origin: * and the map canvas must stay readable.
+      image.crossOrigin = "anonymous";
+      image.onload = () => {
+        osmLoading.delete(tile.key); osmInFlight--;
+        osmTiles.set(tile.key, { img: image });
+        while (osmTiles.size > OSM_CACHE_SIZE) osmTiles.delete(osmTiles.keys().next().value);
+        draw();
+        loadOsmQueue();
+      };
+      image.onerror = () => {
+        osmLoading.delete(tile.key); osmInFlight--;
+        osmFailed.add(tile.key);
+        if (!osmWarned) { osmWarned = true; console.warn("OSM tile " + tile.key + " failed; not retrying OSM tiles this session."); }
+        loadOsmQueue();
+      };
+      image.src = OSM_TILE_URL + tile.z + "/" + osmWrapX(tile.x, tile.z) + "/" + tile.y + ".png";
+    }
+  }
   function render() {
     raf = 0; if (!cw) return;
     const k = T.k;
@@ -729,6 +849,11 @@ canvas { display: block; width: 100%; height: 100%; }
       ctx.strokeStyle = colors.border; ctx.lineWidth = 1 / k; ctx.setLineDash([4 / k, 3 / k]);
       for (const offset of copies) { ctx.save(); ctx.translate(offset, 0); ctx.stroke(borderPath); ctx.restore(); }
       ctx.setLineDash([]);
+    }
+    if (state.osm > 0) {
+      const overlay = osmVisibleTiles(k);
+      requestOsmTiles(overlay.tiles);
+      drawOsmOverlay(overlay);
     }
     if (view && tinted) {
       const [x0, y0, x1, y1] = view.bbox;
@@ -1061,6 +1186,19 @@ canvas { display: block; width: 100%; height: 100%; }
   tIn.addEventListener("input", () => setTarget(parseFloat(tIn.value), "num"));
   $("refr").addEventListener("change", (e) => { state.k = parseFloat(e.target.value); changed(); });
   $("rmax").addEventListener("change", (e) => { state.rmax = +e.target.value; changed(true); });
+  // The OSM slider is a display preference: it goes to localStorage only, never the shared
+  // link. Changing it never needs a new viewshed, just a repaint (and the tile queue).
+  const osmIn = $("osm"), osmVal = $("osmVal");
+  const validOsm = (v) => Number.isInteger(v) && v >= 0 && v <= 100 ? v : 0;
+  function setOsm(value) {
+    state.osm = validOsm(value);
+    osmIn.value = String(state.osm);
+    osmVal.textContent = state.osm + " %";
+    if (state.osm === 0) osmQueue = [];
+    persistState();
+    draw();
+  }
+  osmIn.addEventListener("input", () => setOsm(+osmIn.value));
   onChipClick("presets", "h", setHeight);
   onChipClick("tpresets", "t", setTarget);
   // Changing the name language only re-posts the peaks for the view already on screen.
@@ -1317,6 +1455,7 @@ canvas { display: block; width: 100%; height: 100%; }
   function syncInputs() {
     hIn.value = state.h; hR.value = toSlider(state.h);
     tIn.value = state.t;
+    osmIn.value = String(state.osm); osmVal.textContent = state.osm + " %";
     markNameChips();
     $("refr").value = String(state.k); if (!$("refr").value) { state.k = 0.13; $("refr").value = "0.13"; }
     $("rmax").value = String(state.rmax); if (!$("rmax").value) { state.rmax = 100000; $("rmax").value = "100000"; }
@@ -1325,6 +1464,7 @@ canvas { display: block; width: 100%; height: 100%; }
     const s = JSON.parse(localStorage.getItem("horizon-v3") || "null");
     if (s && validPlace(s.lat) && isFinite(s.h)) Object.assign(state, s);
     state.names = state.names === "en" ? "en" : "local";
+    state.osm = validOsm(state.osm);
   } catch {}
   if (!HIGHLIGHT_OPTIONS.includes(state.highlight)) state.highlight = "magenta";
   readHashState();
