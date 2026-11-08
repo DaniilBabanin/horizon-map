@@ -6,7 +6,7 @@ and a 360° panorama of it with named peaks.
 
 **Live:** https://horizon-map.babanin.de/
 
-![Horizon Finder: view from Großer Feldberg (Taunus), visible ground tinted on the map, skyline panorama with peak names below](images/screenshot.png)
+[![Horizon Finder: view from Großer Feldberg (Taunus) out to 200 km, visible ground tinted on the map, skyline panorama with peak names below](images/screenshot.png)](https://horizon-map.babanin.de/#lat=50.23201&lon=8.45771&h=1.7&k=0.13&rmax=200000&t=0)
 
 ## What it does
 
