@@ -58,7 +58,7 @@ Results go back as transferable buffers. `viewId`/`qid` counters discard stale r
 - OSM overlay: `state.osm` 0–100 (localStorage only), slider `#osm`; raster tiles from `tile.openstreetmap.org` (CORS `*`, checked 2026-11-08; tile usage policy: attribution on the map, no prefetch) drawn after borders, before the tint, with `globalAlpha`; each tile `Image` sets `referrerPolicy = "strict-origin-when-cross-origin"` because Cloudflare sends `Referrer-Policy: same-origin` and OSM blocks Referer-less requests (user report 2026-11-08); zoom `round(log2(k·W/256))` without dpr; ≤ 6 in flight, LRU 300, loads start after the view is still 150 ms (the Fit animation otherwise fetched every intermediate zoom); 0 % = zero requests.
 - Theme: colors are CSS custom properties (light + dark under `prefers-color-scheme` and `[data-theme]`). Canvas code reads them via `readColors()` into `colors`; a new canvas color must be added to the name list there.
 
-**Coverage**: worldwide between 85° S and 85° N (Mercator limit). Terrarium z10 smooths summits (Großer Feldberg: 865 m vs SRTM 881 m, measured 2026-11-07), so standing on a peak is a known weak spot.
+**Coverage**: worldwide between 85° S and 85° N (Mercator limit). Terrarium smooths summits: z10 alone gave Großer Feldberg 865 m (SRTM 881 m); the z12 near field raised it to 876 m (both measured 2026-11-07). The rest is the ~30 m source data (Matterhorn 4,301 m vs 4,478 m), so standing on a sharp peak is still a known weak spot.
 
 ## Data formats
 
