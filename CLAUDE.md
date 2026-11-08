@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 "Horizon Finder": a static, single-page viewshed tool. User places an observer anywhere between 85° S and 85° N, sets eye height (and optionally a target height), and the page computes what terrain is visible (with Earth curvature and refraction), the skyline, and a 360° panorama.
 
-Copied from claude.ai artifact https://claude.ai/artifact/45La1UMsLJSri6BzePbhsB (version 1794051200-2296). No build step, no package manager, no linter. Hosted on GitHub Pages from `main` (repo https://github.com/DaniilBabanin/horizon-map, live at https://babanin.de/horizon-map/ via the user's custom domain; 1 GB site cap; published 2026-11-08; `.nojekyll` skips Jekyll). Push only when the user asks. Design notes for the global data: `research/global-coverage-2026-11-07.md`.
+Copied from claude.ai artifact https://claude.ai/artifact/45La1UMsLJSri6BzePbhsB (version 1794051200-2296). No build step, no package manager, no linter. Hosted on GitHub Pages from `main` (repo https://github.com/DaniilBabanin/horizon-map, live at https://horizon-map.babanin.de/ (custom domain via the `CNAME` file; Cloudflare proxies DNS `horizon-map` CNAME → `daniilbabanin.github.io`, set 2026-11-08); 1 GB site cap; published 2026-11-08; `.nojekyll` skips Jekyll). Push only when the user asks. Design notes for the global data: `research/global-coverage-2026-11-07.md`.
 
 ## Running
 

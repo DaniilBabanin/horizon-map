@@ -4,7 +4,7 @@ Stand anywhere on Earth (between 85° S and 85° N), set your eye height, and se
 lets you see: the visible ground on the map, the skyline that closes the view in every direction,
 and a 360° panorama of it with named peaks.
 
-**Live:** https://babanin.de/horizon-map/
+**Live:** https://horizon-map.babanin.de/
 
 ![Horizon Finder: view from Großer Feldberg (Taunus), visible ground tinted on the map, skyline panorama with peak names below](images/screenshot.png)
 
