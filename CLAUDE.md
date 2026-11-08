@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 "Horizon Finder": a static, single-page viewshed tool. User places an observer anywhere between 85° S and 85° N, sets eye height (and optionally a target height), and the page computes what terrain is visible (with Earth curvature and refraction), the skyline, and a 360° panorama.
 
-Copied from claude.ai artifact https://claude.ai/artifact/45La1UMsLJSri6BzePbhsB (version 1794051200-2296). No build step, no package manager, no linter. Hosting target: GitHub Pages (1 GB site cap; user decision 2026-11-07). Design notes for the global data: `research/global-coverage-2026-11-07.md`.
+Copied from claude.ai artifact https://claude.ai/artifact/45La1UMsLJSri6BzePbhsB (version 1794051200-2296). No build step, no package manager, no linter. Hosted on GitHub Pages from `main` (repo https://github.com/DaniilBabanin/horizon-map, live at https://babanin.de/horizon-map/ via the user's custom domain; 1 GB site cap; published 2026-11-08; `.nojekyll` skips Jekyll). Push only when the user asks. Design notes for the global data: `research/global-coverage-2026-11-07.md`.
 
 ## Running
 
@@ -50,6 +50,8 @@ Results go back as transferable buffers. `viewId`/`qid` counters discard stale r
 - Search: `data/cities.json` at start; the first input fetches `data/cities-1000.json` once and searches it. Coordinates typed into the search box (`coords.js` `parseCoordinates`: decimal, N/S/E/W, DMS, decimal minutes; tested in `test/coords.test.js`) show as the first result.
 - "Use my location": Geolocation API, works only in a secure context (HTTPS or localhost; on the LAN `http://192.168.0.142:8765` the page says so).
 - Map gestures: mouse click = move observer, mouse hover = spot check; touch/pen tap = spot check (tooltip), long-press 500 ms = move observer (user decision 2026-11-07).
+- Panorama gestures: `#pano` has `touch-action: pan-y` (without it a sideways finger slide fired `pointercancel` and hid the readout, reproduced in headless Chrome 2026-11-08); touch/pen readouts stay after lifting until the next press on map or panorama; mouse leave hides.
+- Highlight colour: `state.highlight` (magenta default, green, orange, blue; orange/blue = Okabe-Ito, colour-blind safe) sets `data-highlight` on `<html>`, CSS overrides `--horizon`/`--vis` per theme; saved in localStorage only, not in the hash. `readColors()` re-runs `tintMask()`.
 - Peak names: local OSM name by default; the Local/English toggle (`state.names`, hash `names=en`) picks row[4] (`name:en`) where present. The page maps names before posting rows to the worker.
 - Theme: colors are CSS custom properties (light + dark under `prefers-color-scheme` and `[data-theme]`). Canvas code reads them via `readColors()` into `colors`; a new canvas color must be added to the name list there.
 

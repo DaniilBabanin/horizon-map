@@ -4,7 +4,7 @@ Stand anywhere on Earth (between 85° S and 85° N), set your eye height, and se
 lets you see: the visible ground on the map, the skyline that closes the view in every direction,
 and a 360° panorama of it with named peaks.
 
-**Live:** https://daniilbabanin.github.io/horizon-map/
+**Live:** https://babanin.de/horizon-map/
 
 ![Horizon Finder: view from Großer Feldberg (Taunus), visible ground tinted on the map, skyline panorama with peak names below](images/screenshot.png)
 
@@ -16,8 +16,9 @@ and a 360° panorama of it with named peaks.
   ("can I see a 200 m wind turbine from here?"), view range 50–200 km, and three refraction settings.
 - Map: the ground you can see is tinted; hover (or tap) any spot to see whether it is visible
   and, if not, how many metres it sits below your line of sight.
-- Panorama: the skyline in every direction with OSM peak names (local or English); hover it to see
-  which ridge forms the skyline and how far away it is.
+- Panorama: the skyline in every direction with OSM peak names (local or English); hover it (or
+  slide a finger along it) to see which ridge forms the skyline and how far away it is.
+- Highlight colour: magenta, green, or the colour-blind-safe orange and blue.
 - The view is stored in the URL, so a link reproduces it.
 
 ## How it works
