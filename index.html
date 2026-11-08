@@ -806,6 +806,10 @@ canvas { display: block; width: 100%; height: 100%; }
       const image = new Image();
       // OSM sends access-control-allow-origin: * and the map canvas must stay readable.
       image.crossOrigin = "anonymous";
+      // The tile policy requires a Referer, and OSM serves an "access blocked" tile without
+      // one. Cloudflare in front of horizon-map.babanin.de sends `Referrer-Policy: same-origin`
+      // (seen 2026-11-08), which drops it on cross-origin requests; the per-image policy wins.
+      image.referrerPolicy = "strict-origin-when-cross-origin";
       image.onload = () => {
         osmLoading.delete(tile.key); osmInFlight--;
         osmTiles.set(tile.key, { img: image });
