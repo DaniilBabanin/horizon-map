@@ -43,6 +43,20 @@
   --sky-top: #1c3344; --sky-low: #2b4555; --pano-near: #060b0e; --pano-far: #52656e;
   color-scheme: dark;
 }
+/* Highlight colour: the accent for skyline dots, observer marker and the visible-ground
+   tint. Magenta is the default above; orange and blue are the Okabe-Ito pair that stays
+   distinguishable with red-green colour blindness. */
+:root[data-highlight="green"] { --horizon: #1b7f3b; --vis: rgba(27, 127, 59, 0.38); }
+:root[data-highlight="orange"] { --horizon: #d55e00; --vis: rgba(213, 94, 0, 0.36); }
+:root[data-highlight="blue"] { --horizon: #0072b2; --vis: rgba(0, 114, 178, 0.36); }
+@media (prefers-color-scheme: dark) {
+  :root[data-highlight="green"]:not([data-theme="light"]) { --horizon: #4ade80; --vis: rgba(74, 222, 128, 0.32); }
+  :root[data-highlight="orange"]:not([data-theme="light"]) { --horizon: #e69f00; --vis: rgba(230, 159, 0, 0.34); }
+  :root[data-highlight="blue"]:not([data-theme="light"]) { --horizon: #56b4e9; --vis: rgba(86, 180, 233, 0.34); }
+}
+:root[data-theme="dark"][data-highlight="green"] { --horizon: #4ade80; --vis: rgba(74, 222, 128, 0.32); }
+:root[data-theme="dark"][data-highlight="orange"] { --horizon: #e69f00; --vis: rgba(230, 159, 0, 0.34); }
+:root[data-theme="dark"][data-highlight="blue"] { --horizon: #56b4e9; --vis: rgba(86, 180, 233, 0.34); }
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; }
 body { background: var(--panel); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.45; }
@@ -101,7 +115,7 @@ select { font: 14px var(--f-body); color: var(--ink); background: var(--field); 
 .panowrap { position: relative; border-top: 1px solid var(--rule); background: var(--sky-low); min-width: 0; }
 canvas { display: block; width: 100%; height: 100%; }
 #map { touch-action: none; cursor: crosshair; }
-#pano { cursor: crosshair; }
+#pano { cursor: crosshair; touch-action: pan-y; }
 .panolabel { position: absolute; left: max(10px, env(safe-area-inset-left, 0px)); top: 6px; pointer-events: none; }
 .mapbar { position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); display: flex; gap: 6px; }
 .mapbar button { font: 600 13px var(--f-body); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
@@ -203,6 +217,16 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
 
     <div class="group">
+      <span class="label">Highlight colour</span>
+      <div class="chips" id="highlightpresets">
+        <button class="chip" data-highlight="magenta">Magenta</button>
+        <button class="chip" data-highlight="green">Green</button>
+        <button class="chip" data-highlight="orange" title="Distinguishable with red-green colour blindness">Orange</button>
+        <button class="chip" data-highlight="blue" title="Distinguishable with red-green colour blindness">Blue</button>
+      </div>
+    </div>
+
+    <div class="group">
       <label class="label" for="rmax">Look out to</label>
       <select id="rmax">
         <option value="50000">50 km</option>
@@ -222,7 +246,7 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
 
     <div class="note">
-      <p>Hover the map to check any spot (on a touch screen: tap to check, long-press to stand there): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama to find which ridge forms the skyline in that direction.</p>
+      <p>Hover the map to check any spot (on a touch screen: tap to check, long-press to stand there): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama (or slide a finger along it) to find which ridge forms the skyline in that direction.</p>
       <p>Terrain is AWS Terrain Tiles (Mapzen Terrarium: SRTM and other sources, about 100 m per pixel), worldwide between 85° S and 85° N. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
     </div>
   </aside>
@@ -257,7 +281,8 @@ canvas { display: block; width: 100%; height: 100%; }
   const TILE_SIDE = 256;
   const MAX_TILE_FETCHES = 8;
   const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
-  const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000, names: "local" };
+  const state = { lat: 49.9989, lon: 8.2739, h: 24, t: 0, k: 0.13, rmax: 100000, names: "local", highlight: "magenta" };
+  const HIGHLIGHT_OPTIONS = ["magenta", "green", "orange", "blue"];
   // Projects a [lon, lat] point with its longitude unwrapped to within ±180° of the observer,
   // so a view across the antimeridian stays in one piece; x may then fall outside [0, W].
   // d3.geoMercator wraps its input longitude into [-180, 180), so the world copies are added
@@ -934,12 +959,24 @@ canvas { display: block; width: 100%; height: 100%; }
   }
   let hoverAz = null;
   const ptip = $("ptip");
-  pano.addEventListener("pointermove", (e) => {
+  // Touch and pen have no hover to end a readout: lifting or a cancelled gesture leaves
+  // the line and tooltip in place, and the next press on the map or the panorama replaces
+  // them. Mouse still hides on pointerleave.
+  function hidePano() {
+    if (ptip.hidden && hoverAz == null && hoverPt == null) return;
+    ptip.hidden = true; hoverAz = null; hoverPt = null; draw(); drawPano();
+  }
+  function showPanoAt(clientX, clientY, clamp = false) {
     if (!view || !panoScale) return;
     const r = pano.getBoundingClientRect();
-    const px = e.clientX - r.left, py = e.clientY - r.top;
-    const fx = (px - panoScale.left) / panoScale.Wd;
-    if (fx < 0 || fx >= 1) { ptip.hidden = true; return; }
+    const px = clientX - r.left, py = clientY - r.top;
+    let fx = (px - panoScale.left) / panoScale.Wd;
+    if (fx < 0 || fx >= 1) {
+      // A captured finger sliding past the plot edge keeps its readout at the edge;
+      // a mouse leaving the plot has nothing under it to point at.
+      if (!clamp) { hidePano(); return; }
+      fx = Math.max(0, Math.min(1 - 1e-6, fx));
+    }
     const a = Math.floor(fx * view.A);
     hoverAz = fx * 360;
     hoverPt = [view.skyLon[a], view.skyLat[a]];
@@ -951,8 +988,23 @@ canvas { display: block; width: 100%; height: 100%; }
     ptip.style.left = Math.max(4, Math.min(px + 12, pw - tw - 6)) + "px";
     ptip.style.top = Math.max(4, py - 34) + "px";
     draw(); drawPano();
+  }
+  pano.addEventListener("pointerdown", (e) => {
+    // Capture keeps the moves coming when the finger slides past the canvas edge.
+    if (pano.setPointerCapture) pano.setPointerCapture(e.pointerId);
+    showPanoAt(e.clientX, e.clientY, e.pointerType !== "mouse");
   });
-  pano.addEventListener("pointerleave", () => { ptip.hidden = true; hoverAz = null; hoverPt = null; draw(); drawPano(); });
+  pano.addEventListener("pointermove", (e) => {
+    // A captured touch/pen drag and every mouse or pen hover both move the readout.
+    showPanoAt(e.clientX, e.clientY, e.pointerType !== "mouse");
+  });
+  pano.addEventListener("pointerleave", (e) => {
+    if (e.pointerType !== "mouse") return;
+    hidePano();
+  });
+  // Touch readouts outlive the finger; the next press on the map or the panorama clears
+  // them. Separate from the map's own gesture handlers, whose tap/long-press is unchanged.
+  canvas.addEventListener("pointerdown", hidePano);
 
   // ---------- inputs ----------
   function markChips(container, key, value) {
@@ -973,6 +1025,7 @@ canvas { display: block; width: 100%; height: 100%; }
     markChips("#presets", "h", state.h);
     markChips("#tpresets", "t", state.t);
     markNameChips();
+    markHighlightChips();
     updateLabels();
     $("flat").textContent = len(flatHorizon(state.h));
     persistState();
@@ -1022,6 +1075,28 @@ canvas { display: block; width: 100%; height: 100%; }
   $("namepresets").addEventListener("click", (e) => {
     const b = e.target.closest(".chip");
     if (b) setPeakNames(b.dataset.names);
+  });
+  // Highlight colour is a viewer preference, not part of a shared view: it is saved with
+  // `state` in localStorage but left out of the URL hash. Magenta is the stylesheet
+  // default, so it is the absent attribute.
+  function applyHighlight() {
+    if (state.highlight === "magenta") delete document.documentElement.dataset.highlight;
+    else document.documentElement.dataset.highlight = state.highlight;
+  }
+  function markHighlightChips() {
+    for (const b of document.querySelectorAll("#highlightpresets .chip")) b.setAttribute("aria-pressed", String(b.dataset.highlight === state.highlight));
+  }
+  function setHighlight(highlight) {
+    if (!HIGHLIGHT_OPTIONS.includes(highlight) || highlight === state.highlight) return;
+    state.highlight = highlight;
+    applyHighlight();
+    markHighlightChips();
+    persistState();
+    readColors(); draw(); drawPano();
+  }
+  $("highlightpresets").addEventListener("click", (e) => {
+    const b = e.target.closest(".chip");
+    if (b) setHighlight(b.dataset.highlight);
   });
   $("fit").addEventListener("click", () => fit());
 
@@ -1251,7 +1326,9 @@ canvas { display: block; width: 100%; height: 100%; }
     if (s && validPlace(s.lat) && isFinite(s.h)) Object.assign(state, s);
     state.names = state.names === "en" ? "en" : "local";
   } catch {}
+  if (!HIGHLIGHT_OPTIONS.includes(state.highlight)) state.highlight = "magenta";
   readHashState();
+  applyHighlight();
   syncInputs();
   readColors();
   resize(); resizePano();
