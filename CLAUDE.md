@@ -16,7 +16,9 @@ The page `fetch()`es relative paths, so it must be served over HTTP (`file://` f
 python3 -m http.server 8765 --bind 0.0.0.0
 ```
 
-On this machine ports 8000 and 8080 are already taken by other local services (127.0.0.1 only), so use another port. External deps load from CDNs (d3 7.8.5, topojson-client 3.1.0) and Google Fonts, and terrain comes from AWS Terrain Tiles, so the page needs network access.
+On this machine ports 8000 and 8080 are already taken by other local services (127.0.0.1 only), so use another port. d3 7.8.5, topojson-client 3.1.0 and the three web fonts are self-hosted in `vendor/` (`scripts/vendor.sh` re-downloads them with SHA-256 checks; since 2026-11-08, so no visitor IP goes to Google Fonts or script CDNs). Terrain comes from AWS Terrain Tiles, so the page still needs network access.
+
+**Privacy/legal** (user request 2026-11-08): `privacy.html` (English + German) lists every host the browser contacts: GitHub Pages + Cloudflare (site), `s3.amazonaws.com` (terrain), `tile.openstreetmap.org` (only when the overlay is above 0 %). A new third-party request, stored value or browser permission must be added there in both languages. Imprint lives on the user's main site, https://babanin.de/imprint.html; the map's attribution line links both.
 
 ## Tests and benchmark
 
