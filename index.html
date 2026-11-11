@@ -298,7 +298,7 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
 
     <div class="note">
-      <p>Hover the map to check any spot (on a touch screen: tap to check, long-press to stand there): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama (or slide a finger along it) to find which ridge forms the skyline in that direction.</p>
+      <p>Hover the map to check any spot (on a touch screen: tap to check, long-press to stand there): whether it is visible, and if not, how many metres it sits below your line of sight. Hover the panorama (or slide a finger along it) to find which ridge forms the skyline in that direction; scroll or pinch on it to zoom in, drag to turn, double-click to reset.</p>
       <p>Terrain is AWS Terrain Tiles (Mapzen Terrarium: SRTM and other sources, about 100 m per pixel), worldwide between 85° S and 85° N. Earth curvature and refraction are included. Forest canopy and large buildings are partly in the data; individual houses and trees near you are not, so in a city your real view is narrower than shown.</p>
     </div>
   </aside>
@@ -314,7 +314,7 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
     <div class="panowrap" id="panowrap">
       <canvas id="pano" aria-label="360 degree skyline panorama"></canvas>
-      <div class="panolabel label">Skyline panorama · height exaggerated · scroll or pinch to zoom</div>
+      <div class="panolabel label">Skyline panorama · height exaggerated</div>
       <button id="panoreset" type="button" hidden>Reset</button>
       <div class="tip" id="ptip" hidden></div>
     </div>
@@ -1544,6 +1544,7 @@ canvas { display: block; width: 100%; height: 100%; }
   const PROFILE_W = 260, PROFILE_H = 90;  // CSS size, matches the .tip canvas rule
   const PROFILE_LEFT = 28, PROFILE_RIGHT = 12, PROFILE_TOP = 6, PROFILE_BOTTOM = 18;
   const PROFILE_BINS = PROFILE_W - PROFILE_LEFT - PROFILE_RIGHT;  // plot width in CSS px
+  const PROFILE_LABEL_CLEARANCE = 48;  // CSS px: half a "12.3 km" label at 11 px mono plus the width of "you"
   const profileCanvas = document.createElement("canvas");
   // The vertical axis is exaggerated and curvature (through Re) is folded into the heights,
   // so every line of sight from the eye is a straight line in this frame.
@@ -1573,7 +1574,8 @@ canvas { display: block; width: 100%; height: 100%; }
     const y = (height) => PROFILE_TOP + (hi - height) / (hi - lo) * (plotBottom - PROFILE_TOP);
 
     // terrain: filled steps down to the chart bottom; NaN bins stay gaps
-    g.fillStyle = colors["pano-near"];
+    // --muted, not --pano-near: the dark theme's near-ridge colour is almost the tooltip's own.
+    g.fillStyle = colors.muted;
     g.globalAlpha = 0.55;
     let runStart = -1;
     const flushRun = (end) => {
@@ -1632,7 +1634,8 @@ canvas { display: block; width: 100%; height: 100%; }
     g.fillText("you", PROFILE_LEFT, plotBottom + 4);
     g.textAlign = "right";
     g.fillText(len(D), plotRight, plotBottom + 4);
-    if (isFinite(ridge)) {
+    // The ridge distance is left out where it would run into "you" or the total distance.
+    if (isFinite(ridge) && x(m.blockD) > PROFILE_LEFT + PROFILE_LABEL_CLEARANCE && x(m.blockD) < plotRight - PROFILE_LABEL_CLEARANCE - g.measureText(len(D)).width) {
       g.textAlign = "center";
       g.fillText(len(m.blockD), x(m.blockD), plotBottom + 4);
     }

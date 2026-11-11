@@ -15,9 +15,13 @@ and a 360° panorama of it with named peaks.
 - Eye height presets from standing (1.7 m) to an airliner (11 km), an optional target height
   ("can I see a 200 m wind turbine from here?"), view range 50–200 km, and three refraction settings.
 - Map: the ground you can see is tinted; hover (or tap) any spot to see whether it is visible
-  and, if not, how many metres it sits below your line of sight.
+  and, if not, how many metres it sits below your line of sight, with a small cross-section of
+  the terrain along that sightline.
+- Placing the observer on the map next to a mapped summit stands on the summit, at its
+  OpenStreetMap elevation (the terrain data reads sharp peaks too low).
 - Panorama: the skyline in every direction with OSM peak names (local or English); hover it (or
-  slide a finger along it) to see which ridge forms the skyline and how far away it is.
+  slide a finger along it) to see which ridge forms the skyline and how far away it is; scroll or
+  pinch to zoom into a direction.
 - Highlight colour: magenta, green, or the colour-blind-safe orange and blue.
 - OpenStreetMap overlay on the terrain with an opacity slider (0 % = off, no tile requests).
 - The view is stored in the URL, so a link reproduces it.
