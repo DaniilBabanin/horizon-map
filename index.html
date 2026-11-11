@@ -119,6 +119,8 @@ canvas { display: block; width: 100%; height: 100%; }
 #map { touch-action: none; cursor: crosshair; }
 #pano { cursor: crosshair; touch-action: pan-y; }
 .panolabel { position: absolute; left: max(10px, env(safe-area-inset-left, 0px)); top: 6px; pointer-events: none; }
+#panoreset { position: absolute; top: 6px; right: max(8px, env(safe-area-inset-right, 0px)); font: 600 11.5px var(--f-body); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+#panoreset:hover { border-color: var(--horizon); }
 .mapbar { position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); display: flex; gap: 6px; }
 .mapbar button { font: 600 13px var(--f-body); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
 .mapbar button:hover { border-color: var(--horizon); }
@@ -272,7 +274,8 @@ canvas { display: block; width: 100%; height: 100%; }
     </div>
     <div class="panowrap" id="panowrap">
       <canvas id="pano" aria-label="360 degree skyline panorama"></canvas>
-      <div class="panolabel label">Skyline panorama · height exaggerated</div>
+      <div class="panolabel label">Skyline panorama · height exaggerated · scroll or pinch to zoom</div>
+      <button id="panoreset" type="button" hidden>Reset</button>
       <div class="tip" id="ptip" hidden></div>
     </div>
   </div>
@@ -950,6 +953,8 @@ canvas { display: block; width: 100%; height: 100%; }
 
   // ---------- panorama ----------
   let pw = 0, ph = 0, pdpr = 1, panoScale = null;
+  let panoWindow = PANO_FULL;
+  const panoReset = $("panoreset");
   const PANO_TOP = 26, PANO_BOT = 22, PANO_LEFT = 40, PANO_RIGHT = 8;
   // Tags live in the sky above the plot: 13 px high with a 3 px row gap. `top` grows by
   // whole rows only while there are labels, so an unlabelled panorama keeps its height.
@@ -961,19 +966,43 @@ canvas { display: block; width: 100%; height: 100%; }
   new ResizeObserver(resizePano).observe(pwrap);
   const deg = (t) => Math.atan(t) / RAD;
 
+  function panoPlotWidth() { return pw - PANO_LEFT - PANO_RIGHT; }
+  // One plot column is one ray: the column's fraction maps through the current window.
+  function panoRayAt(fraction) {
+    return Math.floor(panoAzimuth(panoWindow, fraction) / 360 * view.A) % view.A;
+  }
+  // A new observer or ray count keeps the window; only the span floor moves.
+  function clampPanoWindow() {
+    if (!view || !pw) return;
+    const width = panoPlotWidth();
+    if (width <= 0) return;
+    const minSpan = panoMinSpan(view.A, width);
+    if (panoWindow.span < minSpan) panoWindow = { start: panoWindow.start, span: minSpan };
+  }
+  function updatePanoReset() {
+    panoReset.hidden = panoWindow.start === PANO_FULL.start && panoWindow.span === PANO_FULL.span;
+  }
+  function applyPanoWindow(next) {
+    panoWindow = next;
+    updatePanoReset();
+    drawPano(); draw();
+  }
+
   // Greedy two-row placement, priority skyline peaks first, then higher elevations, then
   // nearer peaks. A tag that overlaps both rows is dropped; tags never overlap each other.
-  // The result depends only on the peak list and the canvas width, so it is cached across
-  // the hover redraws instead of measuring every name on each pointer move.
+  // Peaks outside the visible azimuth window get no tag. The result depends only on the peak
+  // list, the canvas width and the window, so it is cached across the hover redraws instead
+  // of measuring every name on each pointer move.
   let peakLabels = { placed: [], rows: 0 };
-  let peakLabelsFor = null, peakLabelsWidth = 0;
+  let peakLabelsFor = null, peakLabelsWidth = 0, peakLabelsStart = 0, peakLabelsSpan = 0;
   function layoutPeakLabels() {
     if (!view || !peakList.length || !pw) return { placed: [], rows: 0 };
-    if (peakLabelsFor === peakList && peakLabelsWidth === pw) return peakLabels;
+    if (peakLabelsFor === peakList && peakLabelsWidth === pw &&
+        peakLabelsStart === panoWindow.start && peakLabelsSpan === panoWindow.span) return peakLabels;
     const placed = [];
     const rowIntervals = [[], []];
     let rows = 0;
-    const width = pw - PANO_LEFT - PANO_RIGHT;
+    const width = panoPlotWidth();
     pctx.font = "600 11px 'IBM Plex Sans', system-ui, sans-serif";
     const ordered = peakList.slice().sort((a, b) => {
       if (a.sky !== b.sky) return a.sky ? -1 : 1;
@@ -982,9 +1011,11 @@ canvas { display: block; width: 100%; height: 100%; }
       return a.d - b.d;
     });
     for (const peak of ordered) {
+      const fraction = panoFraction(panoWindow, peak.az / RAD);
+      if (fraction == null) continue;
       const text = peakLabelText(peak);
       const tagWidth = pctx.measureText(text).width + 2 * TAG_PAD;
-      const x = PANO_LEFT + peak.az / (2 * Math.PI) * width;
+      const x = PANO_LEFT + fraction * width;
       const tagX0 = Math.max(PANO_LEFT, Math.min(x - tagWidth / 2, PANO_LEFT + width - tagWidth));
       let row = -1;
       for (let candidate = 0; candidate < 2; candidate++) {
@@ -999,6 +1030,8 @@ canvas { display: block; width: 100%; height: 100%; }
     peakLabels = { placed, rows };
     peakLabelsFor = peakList;
     peakLabelsWidth = pw;
+    peakLabelsStart = panoWindow.start;
+    peakLabelsSpan = panoWindow.span;
     return peakLabels;
   }
   // Fonts load after the first paint; tag widths measured with the fallback face would be
@@ -1024,6 +1057,8 @@ canvas { display: block; width: 100%; height: 100%; }
   }
   function drawPano() {
     if (!pw) return;
+    clampPanoWindow();
+    updatePanoReset();
     const g = pctx;
     g.setTransform(pdpr, 0, 0, pdpr, 0, 0);
     const labels = layoutPeakLabels();
@@ -1043,7 +1078,7 @@ canvas { display: block; width: 100%; height: 100%; }
     const colW = Wd / A;
     // terrain silhouette coloured by distance to the skyline ridge
     for (let x = 0; x < Wd; x++) {
-      const a = Math.floor(x / Wd * A);
+      const a = panoRayAt(x / Wd);
       const t = Math.min(1, view.skyDist[a] / view.rmax);
       const c = n.map((v, i) => Math.round(v + (f[i] - v) * Math.sqrt(t)));
       g.fillStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
@@ -1053,7 +1088,7 @@ canvas { display: block; width: 100%; height: 100%; }
     // nearer ridges inside the silhouette
     g.fillStyle = colors["sky-low"];
     for (let x = 0; x < Wd; x++) {
-      const a = Math.floor(x / Wd * A), nc = view.crN[a];
+      const a = panoRayAt(x / Wd), nc = view.crN[a];
       for (let i = 0; i < nc; i++) {
         const d = view.crD[a * view.CM + i];
         if (d >= view.skyDist[a] - 1) continue;
@@ -1066,7 +1101,7 @@ canvas { display: block; width: 100%; height: 100%; }
     g.globalAlpha = 1;
     // skyline line
     g.fillStyle = colors.horizon;
-    for (let x = 0; x < Wd; x++) { const a = Math.floor(x / Wd * A); g.fillRect(left + x, Y(deg(view.skyAng[a])) - 1, 1.2, 2); }
+    for (let x = 0; x < Wd; x++) { const a = panoRayAt(x / Wd); g.fillRect(left + x, Y(deg(view.skyAng[a])) - 1, 1.2, 2); }
     // eye level and grid
     g.font = "11px 'IBM Plex Mono', ui-monospace, monospace"; g.textBaseline = "middle"; g.textAlign = "right";
     const stepDeg = [0.1, 0.2, 0.5, 1, 2, 5, 10].find(s => (yHi - yLo) / s <= 5) || 10;
@@ -1077,14 +1112,41 @@ canvas { display: block; width: 100%; height: 100%; }
       g.globalAlpha = 1; g.fillText((v > 0 ? "+" : "") + nf(v, stepDeg < 1 ? 1 : 0) + "°", left - 4, y);
     }
     g.setLineDash([]);
-    // compass
+    // compass: eight labels at their azimuths whenever they are inside the window. Below a
+    // quarter turn there is room for a tick and a degree label every 10 degrees (5 below 30).
     g.textAlign = "center"; g.fillStyle = colors.ink; g.font = "600 11px 'IBM Plex Sans', system-ui, sans-serif";
-    ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"].forEach((lab, i) => {
-      const x = left + i / 8 * Wd;
+    ["N", "NE", "E", "SE", "S", "SW", "W", "NW"].forEach((lab, i) => {
+      const fraction = panoFraction(panoWindow, i * 45);
+      if (fraction == null) return;
+      const x = left + fraction * Wd;
       g.fillText(lab, Math.min(pw - 8, Math.max(left + 6, x)), ph - 10);
       g.fillRect(x - 0.5, top + H, 1, 4);
     });
-    if (hoverAz != null) { g.fillStyle = colors.ink; g.globalAlpha = 0.6; g.fillRect(left + hoverAz / 360 * Wd - 0.5, top, 1, H); g.globalAlpha = 1; }
+    if (panoWindow.span === 360 && panoWindow.start === 0) {
+      // The full panorama closes the ring with N at the right edge, as before.
+      g.fillText("N", Math.min(pw - 8, Math.max(left + 6, left + Wd)), ph - 10);
+      g.fillRect(left + Wd - 0.5, top + H, 1, 4);
+    }
+    if (panoWindow.span < 90) {
+      const step = panoWindow.span < 30 ? 5 : 10;
+      g.fillStyle = colors.muted; g.font = "500 10px 'IBM Plex Mono', ui-monospace, monospace";
+      for (let az = 0; az < 360; az += step) {
+        if (az % 45 === 0) continue;
+        const fraction = panoFraction(panoWindow, az);
+        if (fraction == null) continue;
+        const x = left + fraction * Wd;
+        g.fillText(nf(az, 0) + "°", Math.min(pw - 8, Math.max(left + 6, x)), ph - 10);
+        g.fillRect(x - 0.5, top + H, 1, 3);
+      }
+    }
+    if (hoverAz != null) {
+      const fraction = panoFraction(panoWindow, hoverAz);
+      if (fraction != null) {
+        g.fillStyle = colors.ink; g.globalAlpha = 0.6;
+        g.fillRect(left + fraction * Wd - 0.5, top, 1, H);
+        g.globalAlpha = 1;
+      }
+    }
     drawPeakLabels(labels, top, H, Y);
   }
   let hoverAz = null;
@@ -1107,8 +1169,9 @@ canvas { display: block; width: 100%; height: 100%; }
       if (!clamp) { hidePano(); return; }
       fx = Math.max(0, Math.min(1 - 1e-6, fx));
     }
-    const a = Math.floor(fx * view.A);
-    hoverAz = fx * 360;
+    const azimuth = panoAzimuth(panoWindow, fx);
+    const a = Math.floor(azimuth / 360 * view.A) % view.A;
+    hoverAz = azimuth;
     hoverPt = [view.skyLon[a], view.skyLat[a]];
     const t = nearestTown(view.skyLat[a], view.skyLon[a], 12);
     const named = nearestPeakLabel(hoverAz);
@@ -1119,15 +1182,116 @@ canvas { display: block; width: 100%; height: 100%; }
     ptip.style.top = Math.max(4, py - 34) + "px";
     draw(); drawPano();
   }
+  // Gestures: wheel and double-click for the mouse, drag to pan, two fingers to pinch. One
+  // finger keeps the readout behaviour above; touch-action: pan-y still lets a vertical
+  // slide scroll the page.
+  const DRAG_THRESHOLD_PX = 3;
+  const WHEEL_ZOOM_UNITS = 400;
+  let mouseDrag = null;
+  const touchPointers = new Map();
+  let pinch = null;
+
+  function fractionAt(clientX) {
+    const r = pano.getBoundingClientRect();
+    return (clientX - r.left - panoScale.left) / panoScale.Wd;
+  }
+  function firstTwoTouches() {
+    const xs = [...touchPointers.values()];
+    return [xs[0], xs[1]];
+  }
+  function pinchState() {
+    const [x0, x1] = firstTwoTouches();
+    return { distance: Math.abs(x1 - x0), midX: (x0 + x1) / 2 };
+  }
+
+  pano.addEventListener("wheel", (e) => {
+    if (!view || !panoScale) return;
+    const fraction = fractionAt(e.clientX);
+    if (fraction < 0 || fraction > 1) return;
+    e.preventDefault();
+    applyPanoWindow(panoZoom(
+      panoWindow,
+      Math.max(0, Math.min(1, fraction)),
+      2 ** (-e.deltaY / WHEEL_ZOOM_UNITS),
+      panoMinSpan(view.A, panoScale.Wd),
+    ));
+  }, { passive: false });
+  pano.addEventListener("dblclick", () => { if (view) applyPanoWindow(PANO_FULL); });
+  panoReset.addEventListener("click", () => applyPanoWindow(PANO_FULL));
+
   pano.addEventListener("pointerdown", (e) => {
     // Capture keeps the moves coming when the finger slides past the canvas edge.
     if (pano.setPointerCapture) pano.setPointerCapture(e.pointerId);
-    showPanoAt(e.clientX, e.clientY, e.pointerType !== "mouse");
+    if (e.pointerType === "mouse") {
+      mouseDrag = { id: e.pointerId, startX: e.clientX, lastX: e.clientX, moved: false };
+      showPanoAt(e.clientX, e.clientY, false);
+    } else if (e.pointerType === "touch") {
+      touchPointers.set(e.pointerId, e.clientX);
+      if (touchPointers.size === 2) {
+        pinch = pinchState();
+        hidePano();
+      } else if (touchPointers.size === 1) {
+        showPanoAt(e.clientX, e.clientY, true);
+      }
+    } else {
+      showPanoAt(e.clientX, e.clientY, true);
+    }
   });
   pano.addEventListener("pointermove", (e) => {
-    // A captured touch/pen drag and every mouse or pen hover both move the readout.
-    showPanoAt(e.clientX, e.clientY, e.pointerType !== "mouse");
+    if (e.pointerType === "mouse") {
+      if (mouseDrag && mouseDrag.id === e.pointerId) {
+        if (!mouseDrag.moved && Math.abs(e.clientX - mouseDrag.startX) > DRAG_THRESHOLD_PX) {
+          mouseDrag.moved = true;
+          mouseDrag.lastX = e.clientX;
+          hidePano();
+        }
+        if (mouseDrag.moved) {
+          if (view && panoScale) {
+            const step = e.clientX - mouseDrag.lastX;
+            mouseDrag.lastX = e.clientX;
+            if (step) applyPanoWindow(panoPan(panoWindow, -step / panoScale.Wd));
+          }
+          return;
+        }
+      }
+      showPanoAt(e.clientX, e.clientY, false);
+      return;
+    }
+    if (e.pointerType === "touch") {
+      if (!touchPointers.has(e.pointerId)) { showPanoAt(e.clientX, e.clientY, true); return; }
+      touchPointers.set(e.pointerId, e.clientX);
+      if (pinch && touchPointers.size >= 2) {
+        const [x0, x1] = firstTwoTouches();
+        const distance = Math.abs(x1 - x0), midX = (x0 + x1) / 2;
+        if (view && panoScale) {
+          let next = panoWindow;
+          if (pinch.distance > 0 && distance > 0) {
+            const fraction = Math.max(0, Math.min(1, fractionAt(midX)));
+            next = panoZoom(next, fraction, distance / pinch.distance, panoMinSpan(view.A, panoScale.Wd));
+          }
+          next = panoPan(next, -(midX - pinch.midX) / panoScale.Wd);
+          applyPanoWindow(next);
+        }
+        pinch = { distance, midX };
+        return;
+      }
+      if (touchPointers.size === 1) showPanoAt(e.clientX, e.clientY, true);
+      return;
+    }
+    showPanoAt(e.clientX, e.clientY, true);
   });
+  function endPanoPointer(e) {
+    if (e.pointerType === "mouse") {
+      if (mouseDrag && mouseDrag.id === e.pointerId) mouseDrag = null;
+      return;
+    }
+    if (e.pointerType === "touch") {
+      touchPointers.delete(e.pointerId);
+      pinch = touchPointers.size >= 2 ? pinchState() : null;
+    }
+  }
+  pano.addEventListener("pointerup", endPanoPointer);
+  pano.addEventListener("pointercancel", endPanoPointer);
   pano.addEventListener("pointerleave", (e) => {
     if (e.pointerType !== "mouse") return;
     hidePano();
