@@ -33,7 +33,7 @@ node bench/rays.js          # ray-count benchmark, ~35 min, prints a Markdown ta
 
 ## Architecture
 
-`index.html` holds CSS, markup and the main-thread script; the Web Worker is `worker.js`.
+`index.html` holds CSS, markup and the main-thread script; the Web Worker is `worker.js`. Pure page logic lives in small classic scripts loaded before the inline script, each a browser global plus a Node export with its own test: `coords.js`, `snap.js`, `panoview.js`, `pagelib.js` (ray count, hash parse/format, peak cells, OSM tile range, panorama tag placement, slider and compass helpers). New pure logic goes there, not into the IIFE.
 
 **Worker** (`worker.js`, loaded with `new Worker("worker.js")`): shares no scope with the main script. It owns all tile math, keeps elevation tiles in memory and handles these messages:
 - `init {R}` → Earth radius; resets the store.
