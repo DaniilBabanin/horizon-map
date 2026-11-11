@@ -419,20 +419,30 @@ function query(m) {
   if (!last) return;
   const { lat, lon, zo, Re, t, mosaic, fineMosaic, fineScale } = last;
   const D = greatCircleDistance(lat, lon, m.lat, m.lon);
+  const ds = 30, n = Math.floor(D / ds);
+  // A profile reply packs the walk into bins for the tooltip chart. Never more bins than
+  // walk samples: empty bins would show detail the walk never measured.
+  const wantedBins = typeof m.profile === "number" && isFinite(m.profile) ? Math.floor(m.profile) : 0;
+  const binCount = wantedBins >= 2 ? Math.max(1, Math.min(wantedBins, n + 1)) : 0;
+  const profile = binCount > 0 ? new Float32Array(binCount).fill(NaN) : null;
   const target = mosaicPosition(mosaic, m.lat, m.lon);
   let zt = fineMosaic && D <= FINE_RADIUS
     ? sampleMosaic(fineMosaic, target.px * fineScale, target.py * fineScale)
     : NaN;
   if (!isFinite(zt)) zt = sampleMosaic(mosaic, target.px, target.py);
-  if (!isFinite(zt)) { postMessage({ type: "query", qid: m.qid, D, z: NaN }); return; }
-  const ds = 30, n = Math.floor(D / ds);
+  if (!isFinite(zt)) {
+    const reply = { type: "query", qid: m.qid, D, z: NaN };
+    if (profile) { reply.profile = profile; reply.blockD = 0; postMessage(reply, [profile.buffer]); }
+    else postMessage(reply);
+    return;
+  }
   const p1 = lat * RAD, p2 = m.lat * RAD, dLon = (m.lon - lon) * RAD;
   const sinP1 = Math.sin(p1), cosP1 = Math.cos(p1);
   const sinP2 = Math.sin(p2), cosP2 = Math.cos(p2);
   const sinDLon = Math.sin(dLon), cosDLon = Math.cos(dLon);
   const bearing = Math.atan2(sinDLon * cosP2, cosP1 * sinP2 - sinP1 * cosP2 * cosDLon);
   const sinBearing = Math.sin(bearing), cosBearing = Math.cos(bearing);
-  let maxA = -Infinity;
+  let maxA = -Infinity, blockD = 0;
   for (let i = 1; i <= n; i++) {
     const d = i * ds, delta = d / R;
     const sinDelta = Math.sin(delta), cosDelta = Math.cos(delta);
@@ -444,12 +454,24 @@ function query(m) {
       : NaN;
     if (!isFinite(z)) z = sampleMosaic(mosaic, sample.px, sample.py);
     if (!isFinite(z)) break;
+    if (profile) {
+      const bin = Math.min(binCount - 1, Math.floor(d * binCount / D));
+      // Maximum, not mean: a mean would shave the blocking ridge down.
+      if (!(z <= profile[bin])) profile[bin] = z;
+    }
     const ang = (z - d * d / (2 * Re) - zo) / d;
-    if (ang > maxA) maxA = ang;
+    if (ang > maxA) { maxA = ang; blockD = d; }
+  }
+  if (profile) {
+    // The target's own ground closes the last bin, even when the walk broke early.
+    const lastBin = binCount - 1;
+    if (!(zt <= profile[lastBin])) profile[lastBin] = zt;
   }
   const angT = D > 0 ? (zt - D * D / (2 * Re) - zo) / D : Infinity;
   const hidden = D === 0 || angT + t / D >= maxA ? 0 : (maxA - angT) * D - t;
-  postMessage({ type: "query", qid: m.qid, D, z: zt, hidden });
+  const reply = { type: "query", qid: m.qid, D, z: zt, hidden };
+  if (profile) { reply.profile = profile; reply.blockD = blockD; postMessage(reply, [profile.buffer]); }
+  else postMessage(reply);
 }
 
 onmessage = (e) => {
