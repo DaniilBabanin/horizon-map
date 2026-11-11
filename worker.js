@@ -252,6 +252,9 @@ function view(m) {
     : NaN;
   if (!isFinite(z0)) z0 = sampleMosaic(mosaic, observerPx, observerPy);
   if (!isFinite(z0)) { last = null; postMessage({ type: "view", id, error: "outside" }); return; }
+  // A ground override from the page (an OSM summit height) replaces the sampled height;
+  // the near terrain stays as sampled, so only the observer's own elevation changes.
+  if (Number.isFinite(m.ground)) z0 = m.ground;
   const A = m.rays || 4096, ds = 60, N = Math.floor(rmax / ds) + 1;
   const fineSteps = fineMosaic ? Math.floor(fine.radius / ds) : 0;
   const zo = z0 + h, Re = R / (1 - k), cosl = Math.cos(lat * RAD);
