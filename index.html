@@ -125,6 +125,7 @@ canvas { display: block; width: 100%; height: 100%; }
 .hint { position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); top: 12px; max-width: calc(100% - 150px); background: var(--halo); border-radius: 6px; padding: 6px 10px; font-size: 12.5px; color: var(--ink); pointer-events: none; }
 .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font: 12px var(--f-mono); color: var(--ink); white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,0.12); z-index: 3; }
 .tip b { color: var(--horizon); font-weight: 500; }
+.tip canvas { display: block; width: 260px; height: 90px; margin-top: 6px; }
 .scale { position: absolute; left: max(12px, env(safe-area-inset-left, 0px)); bottom: 12px; font: 11px var(--f-mono); color: var(--ink); background: var(--halo); padding: 2px 5px; border-radius: 4px; }
 .scale .bar { height: 6px; border: 1.5px solid var(--ink); border-top: 0; margin-top: 2px; }
 .attrib { position: absolute; right: max(10px, env(safe-area-inset-right, 0px)); bottom: 8px; font-size: 10.5px; color: var(--muted); background: var(--halo); padding: 2px 6px; border-radius: 4px; }
@@ -1307,12 +1308,115 @@ canvas { display: block; width: 100%; height: 100%; }
         b.textContent = top + (m.hidden === 0 ? "visible" : "hidden, " + len(m.hidden) + " below your sightline");
         tip.append(b);
       }
+      if (m.profile && m.profile.length >= 2 && isFinite(m.z)) {
+        tip.append(profileCanvas);
+        drawProfile(m);
+      }
       tip.hidden = false;
-      const tw = tip.offsetWidth;
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
       tip.style.left = Math.min(px + 14, cw - tw - 8) + "px";
-      tip.style.top = (py + 16) + "px";
+      let top = py + 16;
+      if (top + th > ch - 8) top = Math.max(4, py - 16 - th);
+      tip.style.top = top + "px";
     });
-    worker.postMessage({ type: "query", qid: id, lat: ll[1], lon: ll[0] });
+    worker.postMessage({ type: "query", qid: id, lat: ll[1], lon: ll[0], profile: PROFILE_BINS });
+  }
+
+  const PROFILE_W = 260, PROFILE_H = 90;  // CSS size, matches the .tip canvas rule
+  const PROFILE_LEFT = 28, PROFILE_RIGHT = 12, PROFILE_TOP = 6, PROFILE_BOTTOM = 18;
+  const PROFILE_BINS = PROFILE_W - PROFILE_LEFT - PROFILE_RIGHT;  // plot width in CSS px
+  const profileCanvas = document.createElement("canvas");
+  // The vertical axis is exaggerated and curvature (through Re) is folded into the heights,
+  // so every line of sight from the eye is a straight line in this frame.
+  function drawProfile(m) {
+    const backingWidth = Math.round(PROFILE_W * dpr), backingHeight = Math.round(PROFILE_H * dpr);
+    if (profileCanvas.width !== backingWidth || profileCanvas.height !== backingHeight) {
+      profileCanvas.width = backingWidth; profileCanvas.height = backingHeight;
+    }
+    const g = profileCanvas.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, PROFILE_W, PROFILE_H);
+    const bins = m.profile, D = m.D, binWidth = D / bins.length;
+    const Re = R / (1 - state.k);
+    const drop = (d) => d * d / (2 * Re);
+    const plotBottom = PROFILE_H - PROFILE_BOTTOM, plotRight = PROFILE_LEFT + PROFILE_BINS;
+    const eye = view.zo, targetTop = m.z + state.t - drop(D);
+    let lo = Math.min(eye, targetTop), hi = Math.max(eye, targetTop);
+    for (let b = 0; b < bins.length; b++) {
+      if (!isFinite(bins[b])) continue;
+      const height = bins[b] - drop((b + 0.5) * binWidth);
+      if (height < lo) lo = height;
+      if (height > hi) hi = height;
+    }
+    const span = Math.max(10, hi - lo), pad = span * 0.08;
+    lo -= pad; hi += pad;
+    const x = (d) => PROFILE_LEFT + d / D * PROFILE_BINS;
+    const y = (height) => PROFILE_TOP + (hi - height) / (hi - lo) * (plotBottom - PROFILE_TOP);
+
+    // terrain: filled steps down to the chart bottom; NaN bins stay gaps
+    g.fillStyle = colors["pano-near"];
+    g.globalAlpha = 0.55;
+    let runStart = -1;
+    const flushRun = (end) => {
+      if (runStart < 0) return;
+      g.beginPath();
+      g.moveTo(x(runStart * binWidth), plotBottom);
+      for (let b = runStart; b < end; b++) {
+        const terrainY = y(bins[b] - drop((b + 0.5) * binWidth));
+        g.lineTo(x(b * binWidth), terrainY);
+        g.lineTo(x((b + 1) * binWidth), terrainY);
+      }
+      g.lineTo(x(end * binWidth), plotBottom);
+      g.closePath();
+      g.fill();
+      runStart = -1;
+    };
+    for (let b = 0; b < bins.length; b++) {
+      if (isFinite(bins[b])) { if (runStart < 0) runStart = b; }
+      else flushRun(b);
+    }
+    flushRun(bins.length);
+    g.globalAlpha = 1;
+
+    // sightline from the eye to the target top, dashed while hidden
+    g.strokeStyle = colors.horizon;
+    g.lineWidth = 1.5;
+    g.setLineDash(m.hidden > 0 ? [4, 3] : []);
+    g.beginPath();
+    g.moveTo(x(0), y(eye));
+    g.lineTo(x(D), y(targetTop));
+    g.stroke();
+    g.setLineDash([]);
+
+    // grazing ray over the highest ridge: the ridge's top, extended to the target
+    const blockBin = Math.min(bins.length - 1, Math.floor(m.blockD / binWidth));
+    const ridge = m.hidden > 0 && m.blockD > 0 && isFinite(bins[blockBin])
+      ? bins[blockBin] - drop(m.blockD) : NaN;
+    if (isFinite(ridge)) {
+      g.strokeStyle = colors.ink;
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(x(0), y(eye));
+      g.lineTo(x(D), y(eye + (ridge - eye) * D / m.blockD));
+      g.stroke();
+      g.fillStyle = colors.horizon;
+      g.beginPath();
+      g.arc(x(m.blockD), y(ridge), 2.5, 0, 2 * Math.PI);
+      g.fill();
+    }
+
+    // labels under the plot
+    g.fillStyle = colors.muted;
+    g.font = "11px 'IBM Plex Mono', ui-monospace, monospace";
+    g.textBaseline = "top";
+    g.textAlign = "left";
+    g.fillText("you", PROFILE_LEFT, plotBottom + 4);
+    g.textAlign = "right";
+    g.fillText(len(D), plotRight, plotBottom + 4);
+    if (isFinite(ridge)) {
+      g.textAlign = "center";
+      g.fillText(len(m.blockD), x(m.blockD), plotBottom + 4);
+    }
   }
 
   // Touch and pen have no hover: a tap checks the spot (the mouse hover), and a long
