@@ -293,7 +293,8 @@ canvas { display: block; width: 100%; height: 100%; }
   const TILE_SIDE = 256;
   const MAX_TILE_FETCHES = 8;
   const proj = d3.geoMercator().scale(W / (2 * Math.PI)).translate([W / 2, W / 2]).precision(0.05);
-  const state = { lat: 50.23201, lon: 8.45771, h: 1.7, t: 0, k: 0.13, rmax: 200000, names: "local", highlight: "magenta", osm: 0 };
+  // rmax defaults to 100 km (user decision 2026-11-11); g is the ground override in metres ASL from an OSM summit, null = sampled terrain.
+  const state = { lat: 50.23201, lon: 8.45771, h: 1.7, t: 0, k: 0.13, rmax: 100000, names: "local", highlight: "magenta", osm: 0, g: null };
   const HIGHLIGHT_OPTIONS = ["magenta", "green", "orange", "blue"];
   // Projects a [lon, lat] point with its longitude unwrapped to within ±180° of the observer,
   // so a view across the antimeridian stays in one piece; x may then fall outside [0, W].
@@ -584,7 +585,7 @@ canvas { display: block; width: 100%; height: 100%; }
       }
       const rays = raysFor(request.rmax);
       setStatus("Tracing " + nf(rays) + " sightlines…");
-      worker.postMessage({ type: "view", id: request.id, lat: request.lat, lon: request.lon, h: state.h, k: state.k, rmax: request.rmax, rays, t: state.t });
+      worker.postMessage({ type: "view", id: request.id, lat: request.lat, lon: request.lon, h: state.h, k: state.k, rmax: request.rmax, rays, t: state.t, ground: state.g });
     } else if (m.type === "view") {
       if (m.id !== viewId) return;
       if (m.error) { setStatus("No terrain data at this spot.", true); return; }
@@ -646,7 +647,7 @@ canvas { display: block; width: 100%; height: 100%; }
     const v = view;
     $("farKm").textContent = v.far.d ? km(v.far.d) : "–";
     updateFarText();
-    $("ground").textContent = nf(v.z0, 0) + " m ASL";
+    $("ground").textContent = nf(v.z0, 0) + " m ASL" + (state.g !== null ? " (OSM summit)" : "");
     $("eye").textContent = nf(v.zo, 0) + " m";
     const disk = Math.PI * v.rmax * v.rmax;
     $("area").textContent = nf(v.area / 1e6, 0) + " km² (" + nf(v.area / disk * 100, v.area / disk < 0.1 ? 1 : 0) + "%)";
@@ -1168,6 +1169,7 @@ canvas { display: block; width: 100%; height: 100%; }
     try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch {}
     const params = new URLSearchParams({ lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, t: state.t });
     if (state.names === "en") params.set("names", "en");
+    if (state.g !== null) params.set("g", state.g);
     history.replaceState(null, "", "#" + params);
   }
   function markNameChips() {
@@ -1243,9 +1245,12 @@ canvas { display: block; width: 100%; height: 100%; }
   });
   $("fit").addEventListener("click", () => fit());
 
-  function placeAt(lat, lon) {
+  // Bumped by every placement, so a snap whose peak cells are still loading cannot
+  // overwrite a search or typed-coordinate choice made meanwhile.
+  let placeGeneration = 0;
+  function placeAt(lat, lon, ground = null) {
     if (!validPlace(lat)) { showHint("Pick a spot between 85° S and 85° N."); return false; }
-    showHint(""); state.lat = lat; state.lon = lon; changed(); return true;
+    showHint(""); state.lat = lat; state.lon = lon; state.g = ground; placeGeneration++; changed(); return true;
   }
 
   // The page is often opened over plain HTTP on the LAN, where browsers hide the
@@ -1320,10 +1325,54 @@ canvas { display: block; width: 100%; height: 100%; }
     if (pressTimer) { clearTimeout(pressTimer); pressTimer = 0; }
     pressStart = null;
   }
-  function placeFromClient(clientX, clientY) {
+  // The OSM peak nearest to a map placement inside the snap radius, or null. Only cells the
+  // index lists exist; a radius of at most 500 m spans one or two cells per axis.
+  async function summitAt(lat, lon, radiusMetres) {
+    const listed = new Set(await loadPeakIndex());
+    const delta = radiusMetres / R;
+    const latRadius = delta / RAD;
+    const lonRadius = Math.asin(Math.min(1, Math.sin(delta) / Math.cos(lat * RAD))) / RAD;
+    const firstSouth = Math.floor((lat - latRadius) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const lastSouth = Math.floor((lat + latRadius) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const firstWest = Math.floor((lon - lonRadius) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const lastWest = Math.floor((lon + lonRadius) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
+    const names = [];
+    for (let south = firstSouth; south <= lastSouth; south += PEAK_CELL_DEGREES) {
+      for (let west = firstWest; west <= lastWest; west += PEAK_CELL_DEGREES) {
+        const name = peakCellName(south, wrapLon(west));
+        if (listed.has(name) && !names.includes(name)) names.push(name);
+      }
+    }
+    if (!names.length) return null;
+    const cellRows = await Promise.all(names.map(loadPeakCell));
+    const rows = [];
+    for (const cell of cellRows) for (const row of cell) rows.push(row);
+    return nearestSummit(rows, lat, lon, radiusMetres, R);
+  }
+  // A map placement (mouse click or long press) may stand on a nearby OSM summit: the
+  // sampled terrain smooths peaks, so a summit's own elevation is used when one lies
+  // within the snap radius of the pressed point. Every other placement clears the override.
+  async function placeFromClient(clientX, clientY) {
     const r = canvas.getBoundingClientRect();
     const ll = invertNear(T.invert([clientX - r.left, clientY - r.top]));
-    if (ll && isFinite(ll[0]) && isFinite(ll[1])) placeAt(Math.round(ll[1] * 1e5) / 1e5, Math.round(ll[0] * 1e5) / 1e5);
+    if (!ll || !isFinite(ll[0]) || !isFinite(ll[1])) return;
+    const lat = Math.round(ll[1] * 1e5) / 1e5, lon = Math.round(ll[0] * 1e5) / 1e5;
+    // This placement owns the newest token; any later placeAt (or placement) outbids it.
+    const token = ++placeGeneration;
+    let summit = null;
+    try {
+      // One screen CSS pixel at this latitude: the map is W device-independent pixels wide.
+      const metresPerPixel = 2 * Math.PI * R * Math.cos(lat * RAD) / (W * T.k);
+      summit = await summitAt(lat, lon, summitSnapRadius(metresPerPixel));
+    } catch (error) {
+      summit = null;
+    }
+    if (token !== placeGeneration) return;
+    if (!summit) { placeAt(lat, lon); return; }
+    const row = summit.row;
+    if (!placeAt(row[1], row[2], row[3])) return;
+    const name = state.names === "en" && row[4] ? row[4] : row[0];
+    showHint("Standing on " + name + ", " + nf(row[3], 0) + " m (OpenStreetMap summit height).");
   }
 
   canvas.addEventListener("click", (e) => {
@@ -1455,6 +1504,9 @@ canvas { display: block; width: 100%; height: 100%; }
     if (isFinite(rmax)) state.rmax = rmax;
     if (isFinite(t) && t >= 0 && t <= 1000) state.t = t;
     state.names = p.get("names") === "en" ? "en" : "local";
+    const g = parseFloat(p.get("g"));
+    // -500 m is below the Dead Sea shore (~-430 m) and 9,000 m above Everest (8,849 m).
+    state.g = isFinite(g) && g >= -500 && g <= 9000 ? g : null;
     return true;
   }
   function syncInputs() {
@@ -1470,6 +1522,8 @@ canvas { display: block; width: 100%; height: 100%; }
     if (s && validPlace(s.lat) && isFinite(s.h)) Object.assign(state, s);
     state.names = state.names === "en" ? "en" : "local";
     state.osm = validOsm(state.osm);
+    // The same range as the hash: below the Dead Sea shore to above Everest.
+    state.g = Number.isFinite(state.g) && state.g >= -500 && state.g <= 9000 ? state.g : null;
   } catch {}
   if (!HIGHLIGHT_OPTIONS.includes(state.highlight)) state.highlight = "magenta";
   readHashState();
