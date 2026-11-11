@@ -326,6 +326,7 @@ canvas { display: block; width: 100%; height: 100%; }
 <script src="coords.js"></script>
 <script src="snap.js"></script>
 <script src="panoview.js"></script>
+<script src="pagelib.js"></script>
 <script>
 (() => {
   const R = 6371008.8, RAD = Math.PI / 180;
@@ -343,7 +344,6 @@ canvas { display: block; width: 100%; height: 100%; }
   // so a view across the antimeridian stays in one piece; x may then fall outside [0, W].
   // d3.geoMercator wraps its input longitude into [-180, 180), so the world copies are added
   // back after projection.
-  const wrapLon = (lon) => ((lon + 180) % 360 + 360) % 360 - 180;
   const projNear = ([lon, lat]) => {
     const unwrapped = lon + 360 * Math.round((state.lon - lon) / 360);
     const wrapped = wrapLon(unwrapped);
@@ -359,19 +359,14 @@ canvas { display: block; width: 100%; height: 100%; }
   const nf = (v, d = 0) => v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
   const km = (m) => { const k = m / 1000; return k < 10 ? nf(k, 2) : k < 100 ? nf(k, 1) : nf(k, 0); };
   const len = (m) => m < 1000 ? nf(m, 0) + " m" : km(m) + " km";
-  const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
-  const compass = (deg) => COMPASS[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
   const validPlace = (lat) => Math.abs(lat) <= MAX_LAT;
-  const flatHorizon = (h) => { const re = R / (1 - state.k); return re * Math.acos(re / (re + h)); };
+  const flatHorizon = (h) => flatHorizonDistance(h, state.k, R);
 
   const $ = (id) => document.getElementById(id);
   const canvas = $("map"), ctx = canvas.getContext("2d"), wrap = $("mapwrap");
   const pano = $("pano"), pctx = pano.getContext("2d"), pwrap = $("panowrap");
   const hIn = $("h"), hR = $("hr");
   const tIn = $("t");
-  const LOGMIN = Math.log10(0.5), LOGMAX = Math.log10(12000);
-  const toSlider = (h) => Math.round((Math.log10(Math.max(0.5, h)) - LOGMIN) / (LOGMAX - LOGMIN) * 1000);
-  const fromSlider = (v) => { const h = Math.pow(10, LOGMIN + v / 1000 * (LOGMAX - LOGMIN)); return h < 10 ? Math.round(h * 10) / 10 : h < 1000 ? Math.round(h) : Math.round(h / 10) * 10; };
   const setStatus = (t, err) => { const s = $("status"); s.textContent = t; s.classList.toggle("err", !!err); };
   let dataError = ""; // a failed base-data load; kept in the status line after each view
   let failedTileCount = 0; // terrain tiles the latest load could not fetch; 0 when all arrived
@@ -526,11 +521,6 @@ canvas { display: block; width: 100%; height: 100%; }
   let peakRowsForView = null;
   let peakIndexPromise = null;
   const peakCellPromises = new Map();
-  function peakCellName(south, west) {
-    const latitude = (south >= 0 ? "N" : "S") + String(Math.abs(south)).padStart(2, "0");
-    const longitude = (west >= 0 ? "E" : "W") + String(Math.abs(west)).padStart(3, "0");
-    return latitude + longitude;
-  }
   function loadPeakIndex() {
     if (!peakIndexPromise) {
       peakIndexPromise = fetch("data/peaks/index.json")
@@ -556,29 +546,11 @@ canvas { display: block; width: 100%; height: 100%; }
   // Every cell whose 2x2 degree extent overlaps the disc's bounding box. The longitude
   // half-width is the worker's disc rule, so a disc across the antimeridian still names
   // the wrapped cells (the south-west corner is wrapped before building the name).
-  function peakCellsTouched(lat, lon, rmax) {
-    const delta = rmax / R, latHalf = delta / RAD;
-    const latMin = Math.max(-90, lat - latHalf), latMax = Math.min(90, lat + latHalf);
-    const lonHalf = Math.abs(lat) + latHalf >= 90
-      ? 180
-      : Math.min(180, Math.asin(Math.min(1, Math.sin(delta) / Math.cos(lat * RAD))) / RAD);
-    const firstSouth = Math.floor(latMin / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
-    const lastSouth = Math.floor(latMax / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
-    const firstWest = Math.floor((lon - lonHalf) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
-    const lastWest = Math.floor((lon + lonHalf) / PEAK_CELL_DEGREES) * PEAK_CELL_DEGREES;
-    const names = [];
-    for (let south = firstSouth; south <= lastSouth; south += PEAK_CELL_DEGREES) {
-      for (let west = firstWest; west <= lastWest; west += PEAK_CELL_DEGREES) {
-        names.push(peakCellName(south, wrapLon(west)));
-      }
-    }
-    return [...new Set(names)];
-  }
   async function requestPeaks(v) {
     const index = await loadPeakIndex();
     if (v.id !== viewId || !index.length) return;
     const listed = new Set(index);
-    const cells = peakCellsTouched(v.lat, v.lon, v.rmax).filter((name) => listed.has(name));
+    const cells = peakCellsTouched(v.lat, v.lon, v.rmax, R).filter((name) => listed.has(name));
     if (!cells.length) return;
     const cellRows = await Promise.all(cells.map(loadPeakCell));
     if (v.id !== viewId) return;
@@ -681,10 +653,6 @@ canvas { display: block; width: 100%; height: 100%; }
     t.drawImage(maskCanvas, 0, 0); t.globalCompositeOperation = "source-in"; t.fillStyle = colors.vis; t.fillRect(0, 0, tinted.width, tinted.height);
   }
 
-  // 2026-11-07 bench (Großer Feldberg, 65536-ray reference): 8192 rays leave 3.4 % of mask pixels
-  // wrong beyond 50 km (0.46 s at 100 km), 16384 leave 1.7–1.9 % (1.6 s at 200 km), 4096 leave 6.3–6.7 %.
-  const raysFor = (rmax) => Math.max(8192, 2 ** Math.ceil(Math.log2(2 * Math.PI * rmax / 80)));
-
   let computeTimer = 0;
   function compute() {
     clearTimeout(computeTimer);
@@ -700,7 +668,7 @@ canvas { display: block; width: 100%; height: 100%; }
   function updateFarText() {
     if (!view || !view.far.d) return;
     const t = nearestTown(view.far.lat, view.far.lon, 15);
-    $("farSub").textContent = compass(view.far.az / RAD) + " · " + nf(view.far.z, 0) + " m ASL" + (t ? " · near " + t.n : "");
+    $("farSub").textContent = compassPoint(view.far.az / RAD) + " · " + nf(view.far.z, 0) + " m ASL" + (t ? " · near " + t.n : "");
   }
   function updateReadouts() {
     const v = view;
@@ -794,22 +762,15 @@ canvas { display: block; width: 100%; height: 100%; }
   let osmInFlight = 0, osmWarned = false;
   const osmWrapX = (x, z) => ((x % 2 ** z) + 2 ** z) % 2 ** z;
   const osmKey = (z, x, y) => z + "/" + osmWrapX(x, z) + "/" + y;
-  const osmZoom = (k) => Math.max(0, Math.min(OSM_MAX_ZOOM, Math.round(Math.log2(k * W / OSM_TILE_SIDE))));
   // Visible tiles in unwrapped world columns (so the overlay crosses the dateline), rows
   // clamped to the Mercator square. The zoom ignores dpr on purpose, to keep request counts low.
   function osmVisibleTiles(k) {
-    const z = osmZoom(k);
-    const side = W / 2 ** z;
-    const tileRows = 2 ** z;
-    const colStart = Math.floor((-T.x / k) / side);
-    const colEnd = Math.ceil(((cw - T.x) / k) / side) - 1;
-    const rowStart = Math.max(0, Math.floor((-T.y / k) / side));
-    const rowEnd = Math.min(tileRows - 1, Math.ceil(((ch - T.y) / k) / side) - 1);
+    const range = osmTileRange(T, cw, ch, W, OSM_TILE_SIDE, OSM_MAX_ZOOM);
     const tiles = [];
-    for (let row = rowStart; row <= rowEnd; row++) {
-      for (let col = colStart; col <= colEnd; col++) tiles.push({ z, x: col, y: row, key: osmKey(z, col, row) });
+    for (let row = range.rowStart; row <= range.rowEnd; row++) {
+      for (let col = range.colStart; col <= range.colEnd; col++) tiles.push({ z: range.z, x: col, y: row, key: osmKey(range.z, col, row) });
     }
-    return { side, tiles };
+    return { side: range.side, tiles };
   }
   // A cache hit moves to the end of the Map, so the first key is the least recently used.
   function osmCached(key) {
@@ -1056,34 +1017,15 @@ canvas { display: block; width: 100%; height: 100%; }
     if (!view || !peakList.length || !pw) return { placed: [], rows: 0 };
     if (peakLabelsFor === peakList && peakLabelsWidth === pw &&
         peakLabelsStart === panoWindow.start && peakLabelsSpan === panoWindow.span) return peakLabels;
-    const placed = [];
-    const rowIntervals = [[], []];
-    let rows = 0;
     const width = panoPlotWidth();
     pctx.font = "600 11px 'IBM Plex Sans', system-ui, sans-serif";
-    const ordered = peakList.slice().sort((a, b) => {
-      if (a.sky !== b.sky) return a.sky ? -1 : 1;
-      const ea = a.ele == null ? -Infinity : a.ele, eb = b.ele == null ? -Infinity : b.ele;
-      if (ea !== eb) return eb - ea;
-      return a.d - b.d;
-    });
-    for (const peak of ordered) {
-      const fraction = panoFraction(panoWindow, peak.az / RAD);
-      if (fraction == null) continue;
-      const text = peakLabelText(peak);
-      const tagWidth = pctx.measureText(text).width + 2 * TAG_PAD;
-      const x = PANO_LEFT + fraction * width;
-      const tagX0 = Math.max(PANO_LEFT, Math.min(x - tagWidth / 2, PANO_LEFT + width - tagWidth));
-      let row = -1;
-      for (let candidate = 0; candidate < 2; candidate++) {
-        const fits = rowIntervals[candidate].every(([a, b]) => tagX0 >= b + TAG_GAP || tagX0 + tagWidth <= a - TAG_GAP);
-        if (fits) { row = candidate; break; }
-      }
-      if (row < 0) continue;
-      rowIntervals[row].push([tagX0, tagX0 + tagWidth]);
-      placed.push({ peak, text, tagWidth, x, tagX0, row });
-      rows = Math.max(rows, row + 1);
-    }
+    const peaks = peakList.map((peak) => ({ ...peak, text: peakLabelText(peak) }));
+    const { placed, rows } = placePeakTags(
+      peaks,
+      (text) => pctx.measureText(text).width,
+      panoWindow,
+      { left: PANO_LEFT, width, pad: TAG_PAD, gap: TAG_GAP },
+    );
     peakLabels = { placed, rows };
     peakLabelsFor = peakList;
     peakLabelsWidth = pw;
@@ -1232,7 +1174,7 @@ canvas { display: block; width: 100%; height: 100%; }
     hoverPt = [view.skyLon[a], view.skyLat[a]];
     const t = nearestTown(view.skyLat[a], view.skyLon[a], 12);
     const named = nearestPeakLabel(hoverAz);
-    ptip.textContent = nf(hoverAz, 0) + "° " + compass(hoverAz) + " · ridge " + km(view.skyDist[a]) + " km away · " + nf(view.skyZ[a], 0) + " m ASL" + (named ? " · " + peakLabelText(named) : "") + (t ? " · near " + t.n : "");
+    ptip.textContent = nf(hoverAz, 0) + "° " + compassPoint(hoverAz) + " · ridge " + km(view.skyDist[a]) + " km away · " + nf(view.skyZ[a], 0) + " m ASL" + (named ? " · " + peakLabelText(named) : "") + (t ? " · near " + t.n : "");
     ptip.hidden = false;
     const tw = ptip.offsetWidth;
     ptip.style.left = Math.max(4, Math.min(px + 12, pw - tw - 6)) + "px";
@@ -1387,10 +1329,7 @@ canvas { display: block; width: 100%; height: 100%; }
   // English is chosen, so an old link or an old saved state stays on the local names.
   function persistState() {
     try { localStorage.setItem("horizon-v3", JSON.stringify(state)); } catch {}
-    const params = new URLSearchParams({ lat: state.lat, lon: state.lon, h: state.h, k: state.k, rmax: state.rmax, t: state.t });
-    if (state.names === "en") params.set("names", "en");
-    if (state.g !== null) params.set("g", state.g);
-    history.replaceState(null, "", "#" + params);
+    history.replaceState(null, "", "#" + formatHashState(state));
   }
   function markNameChips() {
     for (const b of document.querySelectorAll("#namepresets .chip")) b.setAttribute("aria-pressed", String(b.dataset.names === state.names));
@@ -1399,7 +1338,7 @@ canvas { display: block; width: 100%; height: 100%; }
     if (!isFinite(h) || h <= 0) return;
     state.h = Math.min(12000, h);
     if (from !== "num") hIn.value = state.h;
-    if (from !== "range") hR.value = toSlider(state.h);
+    if (from !== "range") hR.value = heightToSlider(state.h);
     changed();
   }
   function setTarget(t, from) {
@@ -1409,7 +1348,7 @@ canvas { display: block; width: 100%; height: 100%; }
     changed();
   }
   hIn.addEventListener("input", () => setHeight(parseFloat(hIn.value), "num"));
-  hR.addEventListener("input", () => setHeight(fromSlider(+hR.value), "range"));
+  hR.addEventListener("input", () => setHeight(sliderToHeight(+hR.value), "range"));
   tIn.addEventListener("input", () => setTarget(parseFloat(tIn.value), "num"));
   $("refr").addEventListener("change", (e) => { state.k = parseFloat(e.target.value); changed(); });
   $("rmax").addEventListener("change", (e) => { state.rmax = +e.target.value; changed(true); });
@@ -1821,22 +1760,13 @@ canvas { display: block; width: 100%; height: 100%; }
 
   // ---------- start ----------
   function readHashState() {
-    const p = new URLSearchParams(location.hash.slice(1));
-    const lat = parseFloat(p.get("lat")), lon = parseFloat(p.get("lon")), h = parseFloat(p.get("h"));
-    if (!isFinite(lat) || !isFinite(lon) || !isFinite(h) || h <= 0 || !validPlace(lat)) return false;
-    state.lat = lat; state.lon = lon; state.h = Math.min(12000, h);
-    const k = parseFloat(p.get("k")), rmax = parseFloat(p.get("rmax")), t = parseFloat(p.get("t"));
-    if (isFinite(k)) state.k = k;
-    if (isFinite(rmax)) state.rmax = rmax;
-    if (isFinite(t) && t >= 0 && t <= 1000) state.t = t;
-    state.names = p.get("names") === "en" ? "en" : "local";
-    const g = parseFloat(p.get("g"));
-    // -500 m is below the Dead Sea shore (~-430 m) and 9,000 m above Everest (8,849 m).
-    state.g = isFinite(g) && g >= -500 && g <= 9000 ? g : null;
+    const parsed = parseHashState(location.hash, MAX_LAT);
+    if (!parsed) return false;
+    Object.assign(state, parsed);
     return true;
   }
   function syncInputs() {
-    hIn.value = state.h; hR.value = toSlider(state.h);
+    hIn.value = state.h; hR.value = heightToSlider(state.h);
     tIn.value = state.t;
     osmIn.value = String(state.osm); osmVal.textContent = state.osm + " %";
     markNameChips();
